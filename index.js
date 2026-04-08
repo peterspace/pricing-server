@@ -8,6 +8,7 @@ const morgan   = require('morgan');
 const connectDB = require('./config/db');
 const { apiLimiter } = require('./middleware/rateLimiter');
 const { seed } = require('./utils/seed');
+
 const app = express();
 
 // ── Connect MongoDB ───────────────────────────────────────────────────────────
@@ -15,17 +16,13 @@ connectDB();
 
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet());
-app.use(
-  cors({
-    origin: [
-      process.env.CLIENT_URL,
-      process.env.ADMIN_URL,
-      'http://localhost:5173',
-      'http://localhost:5174',
-    ],
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: [
+    process.env.CLIENT_URL || 'http://localhost:5173',
+    process.env.ADMIN_URL  || 'http://localhost:5174',
+  ],
+  credentials: true,
+}));
 
 // ── Stripe webhook MUST use raw body — mount BEFORE express.json() ────────────
 const stripeRouter = require('./routes/stripe');
@@ -45,11 +42,9 @@ app.use('/api', apiLimiter);
 
 // ── Public routes ─────────────────────────────────────────────────────────────
 app.use('/api/config',        require('./routes/config'));
-app.use('/api/clarify',       require('./routes/clarify'));
-app.use('/api/quotes',        require('./routes/clarify'));   // WF1 callback: POST /api/quotes/:quoteId/clarification
-app.use('/api/analyse',       require('./routes/analyse'));
-app.use('/api/quotes',        require('./routes/analyse'));   // WF23 callback: POST /api/quotes/:quoteId/result
-app.use('/api/quotes',        require('./routes/quotes'));
+app.use('/api/clarify',  require('./routes/clarify'));
+app.use('/api/analyse',  require('./routes/analyse'));
+app.use('/api/quotes',   require('./routes/quotes'));   // includes all /api/quotes/* endpoints + n8n callbacks
 
 // ── Admin routes (all protected by JWT in individual routers) ─────────────────
 app.use('/api/admin/auth',           require('./routes/admin/auth'));
@@ -68,78 +63,6 @@ app.use('/api/admin/change-orders',  require('./routes/admin/changeOrders'));
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
-
-
-// ── Test n8n server ───────────────────────────────────────────────────
-
-const n8nEndpoint =
-  'https://n8n.srv1555257.hstgr.cloud/webhook-test/quote-request';
-
-// ── testing n8n sync ──────────────────────────────────────────────────────────────
-app.post('/test-w1', async (req, res) => {
-  const { prompt, quoteId, clientName, clientEmail, clientCompany } =
-    req.body;
-
-  if (!prompt) {
-    res.status(400).json('Invalid prompt');
-  }
-
-  if (!quoteId) {
-    res.status(400).json('Invalid quoteId');
-  }
-  if (!clientName) {
-    res.status(400).json('Invalid clientName');
-  }
-  if (!clientEmail) {
-    res.status(400).json('Invalid clientEmail');
-  }
-  if (!clientCompany) {
-    res.status(400).json('Invalid clientCompany');
-  }
-
-  const payload = {
-    prompt: prompt.trim(),
-    quoteId,
-    clientName,
-    clientEmail,
-    clientCompany,
-  };
-  try {
-    const response = await axios.post(n8nEndpoint, payload, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-    console.log('Response:', response.data);
-    res.json({ status: 'ok', response: response.data });
-  } catch (error) {
-    console.error('Error sending request:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ── testing n8n reply ──────────────────────────────────────────────────────────────
-app.post('/reply', async (req, res) => {
-  const { clarification, quoteId } = req.body;
-
-  console.log({ reply: req.body });
-
-  if (!clarification) {
-    res.status(400).json('Invalid clarification');
-  }
-
-  if (!quoteId) {
-    res.status(400).json('Invalid quoteId');
-  }
-
-  console.log({ clarification, quoteId });
-  try {
-    res.json({ status: 'ok' });
-  } catch (error) {
-    console.error('Error sending request:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-
 
 // ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {
