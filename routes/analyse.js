@@ -116,27 +116,38 @@ router.post('/:quoteId/result', async (req, res) => {
   }
 
   // n8n sometimes wraps the body in an array — unwrap if needed
-  const bodyRaw  = Array.isArray(req.body) ? req.body[0] : req.body;
+  const bodyRaw = Array.isArray(req.body) ? req.body[0] : req.body;
 
   let { analysis, workflow_json, summary } = bodyRaw;
 
-  // n8n may also send objects as JSON strings — parse them if needed
-  try { if (typeof analysis      === 'string') analysis      = JSON.parse(analysis); }      catch {}
-  try { if (typeof workflow_json === 'string') workflow_json = JSON.parse(workflow_json); } catch {}
-  try { if (typeof summary       === 'string') summary       = JSON.parse(summary); }       catch {}
+  // n8n may send objects as JSON strings — parse defensively
+  function safeParse(val) {
+    if (val === null || val === undefined) return val;
+    if (typeof val === 'object') return val;
+    try { return JSON.parse(val); } catch { return val; }
+  }
+  analysis     = safeParse(analysis);
+  workflow_json = safeParse(workflow_json);
+  summary       = safeParse(summary);
 
   if (!analysis || !workflow_json) {
     return res.status(400).json({ message: 'analysis and workflow_json are required.' });
   }
 
   try {
+    // summary may be an object { workflow_name, node_count, description, ... }
+    // or a plain string — extract just the description string for workflow.summary
+    const summaryStr = typeof summary === 'object' && summary !== null
+      ? (summary.description || summary.workflow_name || JSON.stringify(summary))
+      : (summary || analysis.workflow_summary || '');
+
     const updated = await Quote.findOneAndUpdate(
       { quoteId: quoteId.toUpperCase() },
       {
         analysis,
         workflow: {
           json:        workflow_json,
-          summary:     summary || analysis.workflow_summary || '',
+          summary:     summaryStr,
           generatedAt: new Date(),
         },
         analysisStatus: 'ready',
