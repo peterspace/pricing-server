@@ -3,6 +3,60 @@ const express = require('express');
 const router  = express.Router();
 const Quote   = require('../models/Quote');
 
+// POST /api/quotes/init
+// Called once when user enters Step 3.
+// Creates the quote record and returns quoteId immediately.
+// Idempotent — if quoteId already exists, returns it unchanged.
+router.post('/init', async (req, res) => {
+  const {
+    quoteId: clientQuoteId,
+    clientName    = '',
+    clientEmail   = '',
+    clientCompany = '',
+    request       = '',
+  } = req.body;
+
+  if (!clientEmail || !clientEmail.includes('@')) {
+    return res.status(400).json({ message: 'A valid email is required.' });
+  }
+
+  try {
+    if (clientQuoteId) {
+      // Already have a quoteId — check it exists
+      const existing = await Quote.findOne({
+        quoteId: clientQuoteId.toUpperCase()
+      }).select('quoteId status clarification').lean();
+
+      if (existing) {
+        return res.json({
+          quoteId:    existing.quoteId,
+          isExisting: true,
+          hasClarification: !!(existing.clarification?.understood),
+        });
+      }
+    }
+
+    // Generate new quoteId and create record
+    const quoteId = 'QT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
+    await Quote.create({
+      quoteId,
+      clientName:     clientName.trim(),
+      clientEmail:    clientEmail.trim().toLowerCase(),
+      clientCompany:  clientCompany.trim(),
+      request:        request.trim(),
+      status:         'new',
+      analysisStatus: 'processing',
+      workflowLocked: true,
+      plan:           'recurring',
+    });
+
+    res.status(201).json({ quoteId, isExisting: false, hasClarification: false });
+  } catch (err) {
+    console.error('Quote init error:', err.message);
+    res.status(500).json({ message: 'Failed to initialise quote.' });
+  }
+});
+
 // GET /api/quotes/:quoteId/status  — client polls while on Analyse step
 router.get('/:quoteId/status', async (req, res) => {
   try {
@@ -40,13 +94,11 @@ router.get('/:quoteId/resume', async (req, res) => {
 
     if (!quote) return res.status(404).json({ message: 'Quote not found.' });
 
-    // Map DB status to client step
-    let resumeStep = 1;
-    if (quote.status === 'new')        resumeStep = 3; // back to clarify (WF1 still running)
-    if (quote.status === 'clarified')  resumeStep = 3; // show saved clarification
-    if (quote.status === 'analysing')  resumeStep = 5; // polling
-    if (quote.analysisStatus === 'ready') resumeStep = 6; // quote ready
-    if (quote.analysisStatus === 'failed') resumeStep = 3; // retry from clarify
+    let resumeStep = 3;
+    if (quote.status === 'clarified' && quote.clarification?.understood) resumeStep = 3; // show clarification
+    if (quote.status === 'analysing')   resumeStep = 5;
+    if (quote.analysisStatus === 'ready') resumeStep = 6;
+    if (quote.analysisStatus === 'failed' && quote.status !== 'clarified') resumeStep = 3;
 
     res.json({
       quoteId:        quote.quoteId,
@@ -70,7 +122,7 @@ router.get('/:quoteId/resume', async (req, res) => {
   }
 });
 
-// GET /api/quotes/:quoteId  — full quote (used on Quote step)
+// GET /api/quotes/:quoteId  — full quote
 router.get('/:quoteId', async (req, res) => {
   try {
     const quote = await Quote.findOne({

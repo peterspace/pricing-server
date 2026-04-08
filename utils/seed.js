@@ -1,9 +1,9 @@
 'use strict';
 require('dotenv').config();
-const mongoose    = require('mongoose');
-const Admin       = require('../models/Admin');
+const mongoose = require('mongoose');
+const Admin = require('../models/Admin');
 const PricingConfig = require('../models/PricingConfig');
-const Settings    = require('../models/Settings');
+const Settings = require('../models/Settings');
 
 async function seed() {
   await mongoose.connect(process.env.MONGO_URI);
@@ -27,8 +27,8 @@ async function seed() {
   const adminCount = await Admin.countDocuments();
   if (adminCount === 0) {
     const admin = await Admin.create({
-      name:     process.env.SEED_ADMIN_NAME     || 'Super Admin',
-      email:    process.env.SEED_ADMIN_EMAIL    || 'admin@example.com',
+      name: process.env.SEED_ADMIN_NAME || 'Super Admin',
+      email: process.env.SEED_ADMIN_EMAIL || 'admin@example.com',
       password: process.env.SEED_ADMIN_PASSWORD || 'ChangeMe123!',
       position: 'Super Admin',
     });

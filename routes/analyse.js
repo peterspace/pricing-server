@@ -115,7 +115,16 @@ router.post('/:quoteId/result', async (req, res) => {
     return res.status(401).json({ message: 'Unauthorized' });
   }
 
-  const { analysis, workflow_json, summary } = req.body;
+  // n8n sometimes wraps the body in an array — unwrap if needed
+  const bodyRaw  = Array.isArray(req.body) ? req.body[0] : req.body;
+
+  let { analysis, workflow_json, summary } = bodyRaw;
+
+  // n8n may also send objects as JSON strings — parse them if needed
+  try { if (typeof analysis      === 'string') analysis      = JSON.parse(analysis); }      catch {}
+  try { if (typeof workflow_json === 'string') workflow_json = JSON.parse(workflow_json); } catch {}
+  try { if (typeof summary       === 'string') summary       = JSON.parse(summary); }       catch {}
+
   if (!analysis || !workflow_json) {
     return res.status(400).json({ message: 'analysis and workflow_json are required.' });
   }

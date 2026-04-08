@@ -4,144 +4,120 @@ const router  = express.Router();
 const axios   = require('axios');
 const Quote   = require('../models/Quote');
 
-// ── Pending promise map — used only for production /webhook/ path ─────────────
-const pending = new Map();
-
 // POST /api/clarify
-// quoteId is optional — server generates one on first visit, reuses on return
+// Requires quoteId (created by /api/quotes/init before this is called).
+// Triggers WF1 fire-and-forget. Client polls GET /api/quotes/:quoteId/clarification.
 router.post('/', async (req, res) => {
   const {
-    quoteId: clientQuoteId,
+    quoteId,
     prompt,
     clientName    = '',
     clientEmail   = '',
     clientCompany = '',
   } = req.body;
 
+  if (!quoteId) {
+    return res.status(400).json({ message: 'quoteId is required. Call /api/quotes/init first.' });
+  }
   if (!prompt || prompt.trim().length < 10) {
     return res.status(400).json({ message: 'Please provide a more detailed request.' });
-  }
-  if (!clientEmail || !clientEmail.includes('@')) {
-    return res.status(400).json({ message: 'A valid email is required.' });
   }
 
   const n8nBase = process.env.N8N_BASE_URL;
   const secret  = process.env.N8N_WEBHOOK_SECRET;
   const wf1Path = process.env.N8N_WF1_PATH || '/webhook-test/quote-request';
-  const isTestUrl = wf1Path.includes('/webhook-test/');
 
   if (!n8nBase) {
     return res.status(503).json({ message: 'n8n integration not configured.' });
   }
 
   try {
-    let quoteId;
-    let existingQuote = null;
-
-    if (clientQuoteId) {
-      existingQuote = await Quote.findOne({ quoteId: clientQuoteId.toUpperCase() });
+    const quote = await Quote.findOne({ quoteId: quoteId.toUpperCase() });
+    if (!quote) {
+      return res.status(404).json({ message: 'Quote not found. Please start over.' });
     }
 
-    if (existingQuote) {
-      // Resuming — update existing record with new prompt
-      quoteId = existingQuote.quoteId;
-      await Quote.findOneAndUpdate(
-        { quoteId },
-        {
-          request:        prompt.trim(),
-          status:         'new',
-          analysisStatus: 'processing',
-          clarification:  null,
-          wf1SentAt:      new Date(),
-        }
-      );
-      console.log('Resuming quote:', quoteId);
-    } else {
-      // First visit — create new quote
-      quoteId = 'QT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
-      await Quote.create({
-        quoteId,
-        clientName:     clientName.trim(),
-        clientEmail:    clientEmail.trim().toLowerCase(),
-        clientCompany:  clientCompany.trim(),
-        request:        prompt.trim(),
-        status:         'new',
-        analysisStatus: 'processing',
-        workflowLocked: true,
-        plan:           'recurring',
-        wf1SentAt:      new Date(),
-      });
-      console.log('Created quote:', quoteId);
+    // If clarification already exists and prompt hasn't changed — return cached
+    if (quote.clarification?.understood && quote.request === prompt.trim()) {
+      console.log('Returning cached clarification for:', quoteId);
+      return res.json({ quoteId, status: 'ready', clarification: quote.clarification });
     }
 
+    // Reset quote for new WF1 run
+    await Quote.findOneAndUpdate(
+      { quoteId: quoteId.toUpperCase() },
+      {
+        request:       prompt.trim(),
+        status:        'new',
+        clarification: null,
+        wf1SentAt:     new Date(),
+      }
+    );
+
+    // Respond immediately — client will poll
+    res.status(202).json({ quoteId, status: 'thinking' });
+
+    // Fire WF1 in background
     const payload = { prompt: prompt.trim(), quoteId, clientName, clientEmail, clientCompany };
     const headers = {
       'Content-Type': 'application/json',
       ...(secret ? { 'x-webhook-secret': secret } : {}),
     };
-
-    let clarification;
+    const isTestUrl = wf1Path.includes('/webhook-test/');
 
     if (isTestUrl) {
-      // webhook-test: synchronous — await response directly
-      console.log('Calling WF1 (test mode)...');
-      const response = await axios.post(`${n8nBase}${wf1Path}`, payload, { headers, timeout: 65000 });
-      const data = Array.isArray(response.data) ? response.data[0] : response.data;
-      clarification = data?.json?.clarification || data?.clarification || data;
-
-      if (!clarification?.understood) {
-        console.error('Unexpected WF1 response:', JSON.stringify(data).slice(0, 300));
-        return res.status(502).json({ message: 'WF1 returned an unexpected response. Please try again.' });
-      }
-
-      await Quote.findOneAndUpdate(
-        { quoteId },
-        { clarification, status: 'clarified', wf1CompletedAt: new Date() }
-      );
-
-    } else {
-      // Production /webhook/: async callback via pending promise map
-      console.log('Calling WF1 (production mode)...');
-      const clarificationPromise = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(quoteId);
-          reject(new Error('WF1 timed out after 65 seconds.'));
-        }, 65000);
-        pending.set(quoteId, { resolve, reject, timer });
-      });
-
-      axios.post(`${n8nBase}${wf1Path}`, payload, { headers, timeout: 15000 })
-        .catch(err => {
-          console.error('WF1 trigger error:', err.response?.status, err.message);
-          const p = pending.get(quoteId);
-          if (!p) return;
-          clearTimeout(p.timer);
-          pending.delete(quoteId);
-          p.reject(err);
+      axios.post(`${n8nBase}${wf1Path}`, payload, { headers, timeout: 120000 })
+        .then(async response => {
+          const data = Array.isArray(response.data) ? response.data[0] : response.data;
+          const clarification = data?.json?.clarification || data?.clarification || data;
+          if (!clarification?.understood) {
+            console.error('Unexpected WF1 response:', JSON.stringify(data).slice(0, 200));
+            await Quote.findOneAndUpdate({ quoteId }, { status: 'cancelled' });
+            return;
+          }
+          await Quote.findOneAndUpdate(
+            { quoteId },
+            { clarification, status: 'clarified', wf1CompletedAt: new Date() }
+          );
+          console.log('WF1 clarification saved for:', quoteId);
+        })
+        .catch(async err => {
+          console.error('WF1 failed for', quoteId, ':', err.message);
+          await Quote.findOneAndUpdate({ quoteId }, { status: 'cancelled' });
         });
-
-      clarification = await clarificationPromise;
+    } else {
+      // Production — n8n calls back to POST /api/quotes/:quoteId/clarification
+      axios.post(`${n8nBase}${wf1Path}`, payload, { headers, timeout: 15000 })
+        .catch(async err => {
+          console.error('WF1 trigger failed for', quoteId, ':', err.message);
+          await Quote.findOneAndUpdate({ quoteId }, { status: 'cancelled' });
+        });
     }
-
-    res.json({ quoteId, clarification });
 
   } catch (err) {
     console.error('Clarify error:', err.message);
-    await Quote.findOneAndUpdate(
-      { quoteId: (clientQuoteId || '').toUpperCase() },
-      { analysisStatus: 'failed', status: 'cancelled' }
-    ).catch(() => {});
+    res.status(500).json({ message: 'Failed to start analysis. Please try again.' });
+  }
+});
 
-    if (err.code === 'ECONNABORTED' || err.message.includes('timeout') || err.message.includes('timed out')) {
-      return res.status(504).json({ message: 'Analysis is taking longer than expected. Please try again.' });
+// GET /api/quotes/:quoteId/clarification — client polls for WF1 result
+router.get('/:quoteId/clarification', async (req, res) => {
+  try {
+    const quote = await Quote.findOne({
+      quoteId: req.params.quoteId.toUpperCase()
+    }).select('quoteId status clarification').lean();
+
+    if (!quote) return res.status(404).json({ message: 'Quote not found.' });
+
+    if (quote.status === 'clarified' && quote.clarification?.understood) {
+      return res.json({ quoteId: quote.quoteId, status: 'ready', clarification: quote.clarification });
     }
-    if (err.response?.status === 404) {
-      return res.status(502).json({ message: 'Workflow not found. Make sure WF1 is active in n8n.' });
+    if (quote.status === 'cancelled') {
+      return res.json({ quoteId: quote.quoteId, status: 'failed' });
     }
-    if (err.code === 'ECONNREFUSED') {
-      return res.status(502).json({ message: 'Could not reach the AI service. Please try again in a moment.' });
-    }
-    res.status(502).json({ message: 'Something went wrong. Please try again.' });
+    res.json({ quoteId: quote.quoteId, status: 'thinking' });
+  } catch {
+    res.status(500).json({ message: 'Server error.' });
   }
 });
 
@@ -155,7 +131,7 @@ router.post('/:quoteId/clarification', async (req, res) => {
   }
 
   const { clarification } = req.body;
-  if (!clarification || !clarification.understood) {
+  if (!clarification?.understood) {
     return res.status(400).json({ message: 'clarification.understood is required.' });
   }
 
@@ -164,8 +140,7 @@ router.post('/:quoteId/clarification', async (req, res) => {
       { quoteId },
       { clarification, status: 'clarified', wf1CompletedAt: new Date() }
     );
-    const p = pending.get(quoteId);
-    if (p) { clearTimeout(p.timer); pending.delete(quoteId); p.resolve(clarification); }
+    console.log('WF1 callback saved clarification for:', quoteId);
     res.json({ message: 'Clarification saved.', quoteId });
   } catch (err) {
     console.error('Clarification callback error:', err.message);
