@@ -8,21 +8,25 @@ const morgan   = require('morgan');
 const connectDB = require('./config/db');
 const { apiLimiter } = require('./middleware/rateLimiter');
 const { seed } = require('./utils/seed');
-
-const app = express();
+const app = express()
+app.set('trust proxy', 1) // Trust first proxy (Render, Heroku, etc.);
 
 // ── Connect MongoDB ───────────────────────────────────────────────────────────
 connectDB();
 
 // ── Security middleware ───────────────────────────────────────────────────────
 app.use(helmet());
-app.use(cors({
-  origin: [
-    process.env.CLIENT_URL || 'http://localhost:5173',
-    process.env.ADMIN_URL  || 'http://localhost:5174',
-  ],
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: [
+      process.env.CLIENT_URL,
+      process.env.ADMIN_URL,
+      'http://localhost:5173',
+      'http://localhost:5174',
+    ],
+    credentials: true,
+  })
+);
 
 // ── Stripe webhook MUST use raw body — mount BEFORE express.json() ────────────
 const stripeRouter = require('./routes/stripe');
