@@ -8,8 +8,6 @@ const morgan = require('morgan');
 const connectDB = require('./config/db');
 const { apiLimiter } = require('./middleware/rateLimiter');
 const { seed } = require('./utils/seed');
-const axios = require('axios');
-
 const app = express();
 
 // ── Connect MongoDB ───────────────────────────────────────────────────────────
@@ -20,8 +18,10 @@ app.use(helmet());
 app.use(
   cors({
     origin: [
-      process.env.CLIENT_URL || 'http://localhost:5173',
-      process.env.ADMIN_URL || 'http://localhost:5174',
+      process.env.CLIENT_URL,
+      process.env.ADMIN_URL,
+      'http://localhost:5173',
+      'http://localhost:5174',
     ],
     credentials: true,
   })
@@ -72,24 +72,6 @@ app.get('/health', (req, res) => {
 
 const n8nEndpoint =
   'https://n8n.srv1555257.hstgr.cloud/webhook-test/quote-request';
-
-const sendToN8n = async () => {
-  try {
-    const response = await axios.post(
-      n8nEndpoint,
-      {
-        user: 'John Doe',
-        action: 'signup',
-      },
-      {
-        headers: { 'Content-Type': 'application/json' },
-      }
-    );
-    console.log('Response:', response.data);
-  } catch (error) {
-    console.error('Error sending request:', error.message);
-  }
-};
 
 // ── testing n8n sync ──────────────────────────────────────────────────────────────
 app.post('/test-w1', async (req, res) => {
@@ -155,6 +137,7 @@ app.post('/reply', async (req, res) => {
   }
 });
 
+
 // ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res
@@ -173,6 +156,7 @@ app.use((err, req, res, next) => {
   });
 });
 
+
 //======{Run see only onces to setup admin user}
 // seed().catch((err) => {
 //   console.error("Seed error:", err.message);
@@ -186,6 +170,7 @@ app.use((err, req, res, next) => {
 
 // # Or just make up something strong
 // # e.g. n8n-pricing-secret-2024-xK9mP3qR
+
 
 // ── Start server ──────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;

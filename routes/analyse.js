@@ -5,27 +5,27 @@ const axios    = require('axios');
 const Quote    = require('../models/Quote');
 const { analyseLimiter } = require('../middleware/rateLimiter');
 
-function generateQuoteId() {
-  return 'QT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
-}
-
 // POST /api/analyse
-// Fire-and-forget: saves a draft Quote, then triggers WF23 in the background.
-// Returns 202 immediately with the quoteId so the client can start polling.
+// quoteId comes from the client (returned by /api/clarify)
+// Updates the existing quote record then fires WF23 in background
 router.post('/', analyseLimiter, async (req, res) => {
   const {
+    quoteId,
     prompt,
     clarification,
-    clientName    = '',
-    clientEmail   = '',
-    clientCompany = '',
-    plan          = 'recurring',
-    selectedTierId = 't2',
+    clientName      = '',
+    clientEmail     = '',
+    clientCompany   = '',
+    plan            = 'recurring',
+    selectedTierId  = 't2',
     supportContract = null,
-    hostedLLMs    = true,
-    ownKeys       = { openai: false, claude: false, gemini: false },
+    hostedLLMs      = true,
+    ownKeys         = { openai: false, claude: false, gemini: false },
   } = req.body;
 
+  if (!quoteId) {
+    return res.status(400).json({ message: 'quoteId is required.' });
+  }
   if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 20) {
     return res.status(400).json({ message: 'Please provide a detailed automation description.' });
   }
@@ -34,69 +34,66 @@ router.post('/', analyseLimiter, async (req, res) => {
   }
 
   try {
-    const quoteId = generateQuoteId();
+    // Update the existing quote (created by /api/clarify) with config options
+    const updated = await Quote.findOneAndUpdate(
+      { quoteId: quoteId.toUpperCase() },
+      {
+        plan,
+        selectedTierId,
+        supportContract,
+        hostedLLMs,
+        ownKeys,
+        status:         'analysing',
+        analysisStatus: 'processing',
+        wf23SentAt:     new Date(),
+      },
+      { new: true }
+    );
 
-    // 1. Save draft Quote immediately so the client can start polling
-    await Quote.create({
-      quoteId,
-      clientName:    clientName.trim(),
-      clientEmail:   clientEmail.trim().toLowerCase(),
-      clientCompany: clientCompany.trim(),
-      request:       prompt.trim(),
-      plan,
-      selectedTierId,
-      supportContract,
-      hostedLLMs,
-      ownKeys,
-      status:         'analysing',
-      workflowLocked: true,
-      analysisStatus: 'processing',
-      wf23SentAt:     new Date(),
-    });
+    if (!updated) {
+      return res.status(404).json({ message: 'Quote not found. Please start over.' });
+    }
 
-    // 2. Respond immediately — client gets quoteId and starts polling
+    // Respond immediately — client starts polling
     res.status(202).json({
       quoteId,
-      status: 'processing',
+      status:  'processing',
       message: 'Analysis started. Poll /api/quotes/:quoteId/status for updates.',
     });
 
-    // 3. Fire WF23 in background (after response is sent)
-    const n8nBase    = process.env.N8N_BASE_URL;
-    const secret     = process.env.N8N_WEBHOOK_SECRET;
-    const wf23Path   = process.env.N8N_WF23_PATH || '/webhook/confirm-clarification';
+    // Fire WF23 in background after response is sent
+    const n8nBase  = process.env.N8N_BASE_URL;
+    const secret   = process.env.N8N_WEBHOOK_SECRET;
+    const wf23Path = process.env.N8N_WF23_PATH || '/webhook-test/confirm-clarification';
 
     if (!n8nBase) {
       console.warn('N8N_BASE_URL not set — skipping WF23 trigger');
       return;
     }
 
-    const wf23Payload = {
-      quoteId,
-      prompt:          prompt.trim(),
-      clarification:   clarification || null,
-      clientName:      clientName.trim(),
-      clientEmail:     clientEmail.trim().toLowerCase(),
-      clientCompany:   clientCompany.trim(),
-      plan,
-      selectedTierId,
-      hostedLLMs,
-      ownKeys,
-    };
-
     axios.post(
       `${n8nBase}${wf23Path}`,
-      wf23Payload,
+      {
+        quoteId,
+        prompt:        prompt.trim(),
+        clarification: clarification || null,
+        clientName:    clientName.trim(),
+        clientEmail:   clientEmail.trim().toLowerCase(),
+        clientCompany: clientCompany.trim(),
+        plan,
+        selectedTierId,
+        hostedLLMs,
+        ownKeys,
+      },
       {
         headers: {
           'Content-Type': 'application/json',
           ...(secret ? { 'x-webhook-secret': secret } : {}),
         },
-        timeout: 180000, // WF23 can take up to 3 min
+        timeout: 180000,
       }
     ).catch(err => {
       console.error(`WF23 trigger failed for ${quoteId}:`, err.message);
-      // Mark quote as failed so client stops polling
       Quote.findOneAndUpdate(
         { quoteId },
         { analysisStatus: 'failed', status: 'cancelled' }
@@ -109,19 +106,16 @@ router.post('/', analyseLimiter, async (req, res) => {
   }
 });
 
-// POST /api/quotes/:quoteId/result
-// Called by WF23 when it finishes — saves analysis + workflow_json to the Quote
+// POST /api/quotes/:quoteId/result — WF23 callback
 router.post('/:quoteId/result', async (req, res) => {
   const { quoteId } = req.params;
   const secret = process.env.N8N_WEBHOOK_SECRET;
 
-  // Verify the secret so only n8n can call this
   if (secret && req.headers['x-webhook-secret'] !== secret) {
     return res.status(401).json({ message: 'Unauthorized' });
   }
 
   const { analysis, workflow_json, summary } = req.body;
-
   if (!analysis || !workflow_json) {
     return res.status(400).json({ message: 'analysis and workflow_json are required.' });
   }
