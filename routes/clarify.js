@@ -43,14 +43,15 @@ router.post('/', async (req, res) => {
       return res.json({ quoteId, status: 'ready', clarification: quote.clarification });
     }
 
-    // Reset quote for new WF1 run
+    // Reset quote for new WF1 run (also resets cancelled/failed quotes from previous attempts)
     await Quote.findOneAndUpdate(
       { quoteId: quoteId.toUpperCase() },
       {
-        request:       prompt.trim(),
-        status:        'new',
-        clarification: null,
-        wf1SentAt:     new Date(),
+        request:        prompt.trim(),
+        status:         'new',
+        analysisStatus: 'processing',
+        clarification:  null,
+        wf1SentAt:      new Date(),
       }
     );
 
@@ -66,31 +67,50 @@ router.post('/', async (req, res) => {
     const isTestUrl = wf1Path.includes('/webhook-test/');
 
     if (isTestUrl) {
+      // webhook-test URL — WF1 is configured with responseData: noData so body is empty.
+      // The actual clarification arrives via the callback POST /api/quotes/:quoteId/clarification.
+      // We just need to fire and let the callback handle the result.
       axios.post(`${n8nBase}${wf1Path}`, payload, { headers, timeout: 120000 })
         .then(async response => {
-          const data = Array.isArray(response.data) ? response.data[0] : response.data;
-          const clarification = data?.json?.clarification || data?.clarification || data;
-          if (!clarification?.understood) {
-            console.error('Unexpected WF1 response:', JSON.stringify(data).slice(0, 200));
-            await Quote.findOneAndUpdate({ quoteId }, { status: 'cancelled' });
-            return;
+          const body = response.data;
+          // If n8n returns actual clarification data (non-empty), save it directly
+          if (body && typeof body === 'object') {
+            const data = Array.isArray(body) ? body[0] : body;
+            const clarification = data?.json?.clarification || data?.clarification;
+            if (clarification?.understood) {
+              // Reset analysisStatus so polling doesn't return 'failed'
+              await Quote.findOneAndUpdate(
+                { quoteId },
+                {
+                  clarification,
+                  status:         'clarified',
+                  analysisStatus: 'processing',
+                  wf1CompletedAt: new Date(),
+                }
+              );
+              console.log('WF1 clarification saved (direct response) for:', quoteId);
+              return;
+            }
           }
-          await Quote.findOneAndUpdate(
-            { quoteId },
-            { clarification, status: 'clarified', wf1CompletedAt: new Date() }
-          );
-          console.log('WF1 clarification saved for:', quoteId);
+          // Empty body (noData mode) — callback route will save the clarification
+          console.log('WF1 triggered (noData mode), waiting for callback for:', quoteId);
         })
         .catch(async err => {
           console.error('WF1 failed for', quoteId, ':', err.message);
-          await Quote.findOneAndUpdate({ quoteId }, { status: 'cancelled' });
+          await Quote.findOneAndUpdate(
+            { quoteId },
+            { status: 'cancelled', analysisStatus: 'failed' }
+          );
         });
     } else {
       // Production — n8n calls back to POST /api/quotes/:quoteId/clarification
       axios.post(`${n8nBase}${wf1Path}`, payload, { headers, timeout: 15000 })
         .catch(async err => {
           console.error('WF1 trigger failed for', quoteId, ':', err.message);
-          await Quote.findOneAndUpdate({ quoteId }, { status: 'cancelled' });
+          await Quote.findOneAndUpdate(
+            { quoteId },
+            { status: 'cancelled', analysisStatus: 'failed' }
+          );
         });
     }
 
