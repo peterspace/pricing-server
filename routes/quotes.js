@@ -157,16 +157,21 @@ router.get('/:quoteId/clarification', async (req, res) => {
   try {
     const quote = await Quote.findOne({
       quoteId: req.params.quoteId.toUpperCase()
-    }).select('quoteId status clarification').lean();
+    }).select('quoteId status analysisStatus clarification').lean();
 
     if (!quote) return res.status(404).json({ message: 'Quote not found.' });
 
+    // Check clarification FIRST — it may have arrived even if analysisStatus
+    // looks stale from a previous failed attempt on the same quote
     if (quote.status === 'clarified' && quote.clarification?.understood) {
       return res.json({ quoteId: quote.quoteId, status: 'ready', clarification: quote.clarification });
     }
-    if (quote.status === 'cancelled') {
+
+    // Only return failed if analysisStatus is failed AND no clarification was saved
+    if (quote.analysisStatus === 'failed' && !quote.clarification?.understood) {
       return res.json({ quoteId: quote.quoteId, status: 'failed' });
     }
+
     res.json({ quoteId: quote.quoteId, status: 'thinking' });
   } catch {
     res.status(500).json({ message: 'Server error.' });
