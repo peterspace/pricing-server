@@ -1,9 +1,9 @@
 'use strict';
 require('dotenv').config();
-const mongoose    = require('mongoose');
-const Admin       = require('../models/Admin');
+const mongoose      = require('mongoose');
+const Admin         = require('../models/Admin');
 const PricingConfig = require('../models/PricingConfig');
-const Settings    = require('../models/Settings');
+const Settings      = require('../models/Settings');
 
 async function seed() {
   await mongoose.connect(process.env.MONGO_URI);

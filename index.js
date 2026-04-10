@@ -1,15 +1,16 @@
 'use strict';
 require('dotenv').config();
 
-const express  = require('express');
-const cors     = require('cors');
-const helmet   = require('helmet');
-const morgan   = require('morgan');
+const express   = require('express');
+const cors      = require('cors');
+const helmet    = require('helmet');
+const morgan    = require('morgan');
 const connectDB = require('./config/db');
 const { apiLimiter } = require('./middleware/rateLimiter');
-const { seed } = require('./utils/seed');
-const app = express()
-app.set('trust proxy', 1) // Trust first proxy (Render, Heroku, etc.);
+const { seed }  = require('./utils/seed');
+
+const app = express();
+app.set('trust proxy', 1); // Trust first proxy (Render, Heroku, etc.)
 
 // ── Connect MongoDB ───────────────────────────────────────────────────────────
 connectDB();
@@ -21,8 +22,10 @@ app.use(
     origin: [
       process.env.CLIENT_URL,
       process.env.ADMIN_URL,
+      process.env.AGENT_URL,
       'http://localhost:5173',
       'http://localhost:5174',
+      'http://localhost:5175',
     ],
     credentials: true,
   })
@@ -45,10 +48,17 @@ if (process.env.NODE_ENV !== 'production') {
 app.use('/api', apiLimiter);
 
 // ── Public routes ─────────────────────────────────────────────────────────────
-app.use('/api/config',        require('./routes/config'));
-app.use('/api/clarify',  require('./routes/clarify'));
-app.use('/api/analyse',  require('./routes/analyse'));
-app.use('/api/quotes',   require('./routes/quotes'));   // includes all /api/quotes/* endpoints + n8n callbacks
+app.use('/api/config',  require('./routes/config'));
+app.use('/api/clarify', require('./routes/clarify'));
+app.use('/api/analyse', require('./routes/analyse'));
+app.use('/api/quotes',  require('./routes/quotes')); // includes all /api/quotes/* + n8n callbacks
+
+// ── Agent routes ──────────────────────────────────────────────────────────────
+// Google must be mounted before /api/agent/auth to avoid route conflict
+app.use('/api/agent/auth/google',    require('./routes/agent/google'));
+app.use('/api/agent/auth',           require('./routes/agent/auth'));
+app.use('/api/agent/conversations',  require('./routes/agent/conversations'));
+app.use('/api/agent/settings',       require('./routes/agent/settings'));
 
 // ── Admin routes (all protected by JWT in individual routers) ─────────────────
 app.use('/api/admin/auth',           require('./routes/admin/auth'));
@@ -83,19 +93,14 @@ app.use((err, req, res, next) => {
   });
 });
 
-//======{Run see only onces to setup admin user}
+//======{Run seed only once to setup admin user}======
 // seed().catch((err) => {
 //   console.error("Seed error:", err.message);
 //   process.exit(1);
 // });
 
-// ── To generate strong web-hook-secret ──────────────────────────────────────────────────────────────
-
-// # In your terminal
+// ── To generate a strong webhook secret ──────────────────────────────────────
 // node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-
-// # Or just make up something strong
-// # e.g. n8n-pricing-secret-2024-xK9mP3qR
 
 // ── Start server ──────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
@@ -103,15 +108,13 @@ const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
 });
 
-// Allow up to 3 minutes for the AI analysis endpoint
-// (2 x Claude calls + processing can take ~2 min on complex workflows)
-server.timeout        = 180000; // 3 min socket timeout
+// Allow up to 3 minutes for AI analysis endpoints
+server.timeout          = 180000;
 server.keepAliveTimeout = 180000;
 
-
 // ── Stuck-quote cleanup job ───────────────────────────────────────────────────
-// Runs every 5 minutes. Marks quotes that have been 'processing' for > 8 minutes
-// as 'failed' so clients stop polling. Covers n8n crashes and network failures.
+// Runs every 5 minutes. Marks quotes stuck in 'processing' for > 8 minutes as
+// failed so clients stop polling. Covers n8n crashes and network failures.
 const Quote = require('./models/Quote');
 setInterval(async () => {
   try {
@@ -120,10 +123,10 @@ setInterval(async () => {
       {
         analysisStatus: 'processing',
         $or: [
-          { wf23SentAt:  { $lt: cutoff } },
-          { wf1SentAt:   { $lt: cutoff }, status: 'new' },
-          { createdAt:   { $lt: new Date(Date.now() - 15 * 60 * 1000) }, analysisStatus: 'processing' },
-        ]
+          { wf23SentAt: { $lt: cutoff } },
+          { wf1SentAt:  { $lt: cutoff }, status: 'new' },
+          { createdAt:  { $lt: new Date(Date.now() - 15 * 60 * 1000) }, analysisStatus: 'processing' },
+        ],
       },
       { analysisStatus: 'failed', status: 'cancelled' }
     );

@@ -1,7 +1,7 @@
 {
   "name": "n8n-pricing-server",
   "version": "1.0.0",
-  "description": "n8n AI Automation Pricing Platform — Express API server",
+  "description": "n8n AI Automation Pricing Platform \u2014 Express API server",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -20,7 +20,9 @@
     "mongoose": "^8.2.0",
     "morgan": "^1.10.0",
     "nodemailer": "^6.9.9",
-    "stripe": "^14.21.0"
+    "stripe": "^14.21.0",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

@@ -22,21 +22,19 @@ router.post('/init', async (req, res) => {
 
   try {
     if (clientQuoteId) {
-      // Already have a quoteId — check it exists
       const existing = await Quote.findOne({
         quoteId: clientQuoteId.toUpperCase()
       }).select('quoteId status clarification').lean();
 
       if (existing) {
         return res.json({
-          quoteId:    existing.quoteId,
-          isExisting: true,
+          quoteId:          existing.quoteId,
+          isExisting:       true,
           hasClarification: !!(existing.clarification?.understood),
         });
       }
     }
 
-    // Generate new quoteId and create record
     const quoteId = 'QT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase();
     await Quote.create({
       quoteId,
@@ -62,7 +60,7 @@ router.get('/:quoteId/status', async (req, res) => {
   try {
     const quote = await Quote.findOne({
       quoteId: req.params.quoteId.toUpperCase()
-    }).select('quoteId analysisStatus analysis workflow.summary status expiresAt').lean();
+    }).select('quoteId analysisStatus analysis status expiresAt').lean();
 
     if (!quote) return res.status(404).json({ message: 'Quote not found.' });
 
@@ -89,13 +87,13 @@ router.get('/:quoteId/resume', async (req, res) => {
   try {
     const quote = await Quote.findOne({
       quoteId: req.params.quoteId.toUpperCase()
-    }).select('quoteId status analysisStatus clarification analysis workflow.summary clientName clientEmail clientCompany plan selectedTierId hostedLLMs ownKeys expiresAt').lean();
+    }).select('quoteId status analysisStatus clarification analysis clientName clientEmail clientCompany plan selectedTierId hostedLLMs ownKeys expiresAt').lean();
 
     if (!quote) return res.status(404).json({ message: 'Quote not found.' });
 
     let resumeStep = 3;
-    if (quote.status === 'clarified' && quote.clarification?.understood) resumeStep = 3; // show clarification
-    if (quote.status === 'analysing')   resumeStep = 5;
+    if (quote.status === 'clarified' && quote.clarification?.understood) resumeStep = 3;
+    if (quote.status === 'analysing')    resumeStep = 5;
     if (quote.analysisStatus === 'ready') resumeStep = 6;
     if (quote.analysisStatus === 'failed' && quote.status !== 'clarified') resumeStep = 3;
 
@@ -106,7 +104,6 @@ router.get('/:quoteId/resume', async (req, res) => {
       analysisStatus: quote.analysisStatus,
       clarification:  quote.clarification || null,
       analysis:       quote.analysis      || null,
-      summary:        quote.workflow?.summary || '',
       clientName:     quote.clientName,
       clientEmail:    quote.clientEmail,
       clientCompany:  quote.clientCompany,
@@ -161,7 +158,7 @@ router.get('/:quoteId/clarification', async (req, res) => {
 
     if (!quote) return res.status(404).json({ message: 'Quote not found.' });
 
-    // Check clarification FIRST — it may have arrived even if analysisStatus
+    // ── FIX: check clarification FIRST — it may have arrived even if analysisStatus
     // looks stale from a previous failed attempt on the same quote
     if (quote.status === 'clarified' && quote.clarification?.understood) {
       return res.json({ quoteId: quote.quoteId, status: 'ready', clarification: quote.clarification });
@@ -193,9 +190,16 @@ router.post('/:quoteId/clarification', async (req, res) => {
   }
 
   try {
+    // ── FIX: reset analysisStatus to 'processing' so polling doesn't return 'failed'
+    // when this quote had a previous failed attempt
     await Quote.findOneAndUpdate(
       { quoteId },
-      { clarification, status: 'clarified', wf1CompletedAt: new Date() }
+      {
+        clarification,
+        status:         'clarified',
+        analysisStatus: 'processing',
+        wf1CompletedAt: new Date(),
+      }
     );
     console.log('WF1 callback saved clarification for:', quoteId);
     res.json({ message: 'Clarification saved.', quoteId });
@@ -225,7 +229,7 @@ router.post('/:quoteId/result', async (req, res) => {
     if (typeof val === 'object') return val;
     try { return JSON.parse(val); } catch { return val; }
   }
-  analysis     = safeParse(analysis);
+  analysis      = safeParse(analysis);
   workflow_json = safeParse(workflow_json);
   summary       = safeParse(summary);
 
@@ -234,13 +238,11 @@ router.post('/:quoteId/result', async (req, res) => {
   }
 
   try {
-    // Merge summary metadata into analysis so everything lives in one place
-    // summary = { workflow_name, node_count, description, complexity, agent_list }
     const enrichedAnalysis = {
       ...analysis,
-      workflow_summary:  analysis.workflow_summary || (summary?.description) || '',
-      workflow_name:     summary?.workflow_name    || analysis.workflow_name  || '',
-      node_count:        summary?.node_count       || analysis.node_count     || 0,
+      workflow_summary: analysis.workflow_summary || summary?.description || '',
+      workflow_name:    summary?.workflow_name    || analysis.workflow_name || '',
+      node_count:       summary?.node_count       || analysis.node_count   || 0,
     };
 
     const updated = await Quote.findOneAndUpdate(

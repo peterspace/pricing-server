@@ -43,6 +43,8 @@ router.post('/', async (req, res) => {
       return res.json({ quoteId, status: 'ready', clarification: quote.clarification });
     }
 
+    // For refinement rounds, the enriched prompt differs from original request
+    // so it always falls through to reset + re-trigger WF1 — correct behaviour
     // Reset quote for new WF1 run (also resets cancelled/failed quotes from previous attempts)
     await Quote.findOneAndUpdate(
       { quoteId: quoteId.toUpperCase() },
@@ -78,7 +80,7 @@ router.post('/', async (req, res) => {
             const data = Array.isArray(body) ? body[0] : body;
             const clarification = data?.json?.clarification || data?.clarification;
             if (clarification?.understood) {
-              // Reset analysisStatus so polling doesn't return 'failed'
+              // ── FIX: reset analysisStatus so polling doesn't return 'failed'
               await Quote.findOneAndUpdate(
                 { quoteId },
                 {
