@@ -409,7 +409,7 @@ function getModelInfo(model, agent) {
     'gemini-3-flash-preview':     { provider: 'ollama',  model: 'gemini-3-flash-preview:cloud' },
   };
 
-  const info = map[model] || { provider: 'ollama', model: 'default' };  // default → Ollama fallback
+  const info = map[model] || { provider: 'ollama', model: 'qwen3.5:397b-cloud' };  // unknown → Qwen fallback
 
   // Only attach apiKey for paid providers (Claude, OpenAI, Gemini)
   const paidProviders = ['claude', 'openai', 'gemini'];
