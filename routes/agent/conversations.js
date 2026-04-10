@@ -173,7 +173,7 @@ router.get('/:id/clarification', async (req, res) => {
   try {
     const conv = await AgentConversation.findOne({
       _id: req.params.id, agentUserId: req.agent._id,
-    }).select('clarification analysisStatus').lean();
+    }).select('clarification analysisStatus updatedAt').lean();
     if (!conv) return res.status(404).json({ message: 'Conversation not found.' });
 
     if (conv.clarification?.understood) {
@@ -182,9 +182,41 @@ router.get('/:id/clarification', async (req, res) => {
     if (conv.analysisStatus === 'failed') {
       return res.json({ status: 'failed' });
     }
+
+    // Auto-expire: if stuck in clarifying for > 12 min (n8n probably crashed),
+    // reset to idle so a refreshed client doesn't resume polling indefinitely
+    if (conv.analysisStatus === 'clarifying') {
+      const stuckMs = Date.now() - new Date(conv.updatedAt).getTime();
+      if (stuckMs > 12 * 60 * 1000) {
+        await AgentConversation.findByIdAndUpdate(req.params.id, { analysisStatus: 'idle' });
+        return res.json({ status: 'expired' });
+      }
+    }
+
     res.json({ status: 'thinking' });
   } catch {
     res.status(500).json({ message: 'Server error.' });
+  }
+});
+
+
+// POST /api/agent/conversations/:id/cancel — client-side cancel, resets stuck status
+router.post('/:id/cancel', async (req, res) => {
+  try {
+    const conv = await AgentConversation.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        agentUserId: req.agent._id,
+        analysisStatus: { $in: ['clarifying', 'generating'] },  // only reset if in-progress
+      },
+      { analysisStatus: 'idle', clarification: null },
+      { new: true }
+    );
+    // Return 200 even if not found — cancel is idempotent
+    res.json({ message: 'Cancelled.', cancelled: !!conv });
+  } catch (err) {
+    console.error('Cancel error:', err.message);
+    res.status(500).json({ message: 'Failed to cancel.' });
   }
 });
 
@@ -368,13 +400,13 @@ function getModelInfo(model, agent) {
     'gpt-5-mini':                 { provider: 'openai',  model: 'gpt-5-mini' },
     'gpt-4o':                     { provider: 'openai',  model: 'gpt-4o' },
     // ── Google Gemini ────────────────────────────────────────────────────────
-    // 'gemini-1.5-pro':             { provider: 'gemini',  model: 'gemini-1.5-pro' },
-    // 'gemini-1.5-flash':           { provider: 'gemini',  model: 'gemini-1.5-flash' },
+    'gemini-1.5-pro':             { provider: 'gemini',  model: 'gemini-1.5-pro' },
+    'gemini-1.5-flash':           { provider: 'gemini',  model: 'gemini-1.5-flash' },
     // ── Ollama (your server credentials — no user key needed) ───────────────
     'gemma4-31b':                 { provider: 'ollama',  model: 'gemma4:31b-cloud' },
     'qwen3-vl-235b':              { provider: 'ollama',  model: 'qwen3-vl:235b-cloud' },
     'qwen3-5-397b':               { provider: 'ollama',  model: 'qwen3.5:397b-cloud' },
-    // 'gemini-3-flash-preview':     { provider: 'ollama',  model: 'gemini-3-flash-preview:cloud' },
+    'gemini-3-flash-preview':     { provider: 'ollama',  model: 'gemini-3-flash-preview:cloud' },
   };
 
   const info = map[model] || { provider: 'ollama', model: 'default' };  // default → Ollama fallback
