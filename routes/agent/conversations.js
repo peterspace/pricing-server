@@ -356,17 +356,37 @@ router.post('/:id/clarification', async (req, res) => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getModelInfo(model, agent) {
+  // Keys must match the ROUTE_MAP in WF1 Set Route node: "provider:model"
   const map = {
-    'gpt-4o':            { provider: 'openai',  model: 'gpt-4o' },
-    'gpt-4o-mini':       { provider: 'openai',  model: 'gpt-4o-mini' },
-    'claude-3-5-sonnet': { provider: 'claude',  model: 'claude-3-5-sonnet-20241022' },
-    'claude-3-haiku':    { provider: 'claude',  model: 'claude-3-haiku-20240307' },
-    'gemini-1.5-pro':    { provider: 'gemini',  model: 'gemini-1.5-pro' },
-    'gemini-1.5-flash':  { provider: 'gemini',  model: 'gemini-1.5-flash' },
+    // ── Anthropic Claude ────────────────────────────────────────────────────
+    'claude-sonnet-4-6':          { provider: 'claude',  model: 'claude-sonnet-4-6' },
+    'claude-opus-4-6':            { provider: 'claude',  model: 'claude-opus-4-6' },
+    'claude-haiku-4-5':           { provider: 'claude',  model: 'claude-haiku-4-5-20251001' },
+    // ── OpenAI ──────────────────────────────────────────────────────────────
+    'gpt-5.4-pro':                { provider: 'openai',  model: 'gpt-5.4-pro' },
+    'gpt-5.1':                    { provider: 'openai',  model: 'gpt-5.1' },
+    'gpt-5-mini':                 { provider: 'openai',  model: 'gpt-5-mini' },
+    'gpt-4o':                     { provider: 'openai',  model: 'gpt-4o' },
+    // ── Google Gemini ────────────────────────────────────────────────────────
+    // 'gemini-1.5-pro':             { provider: 'gemini',  model: 'gemini-1.5-pro' },
+    // 'gemini-1.5-flash':           { provider: 'gemini',  model: 'gemini-1.5-flash' },
+    // ── Ollama (your server credentials — no user key needed) ───────────────
+    'gemma4-31b':                 { provider: 'ollama',  model: 'gemma4:31b-cloud' },
+    'qwen3-vl-235b':              { provider: 'ollama',  model: 'qwen3-vl:235b-cloud' },
+    'qwen3-5-397b':               { provider: 'ollama',  model: 'qwen3.5:397b-cloud' },
+    // 'gemini-3-flash-preview':     { provider: 'ollama',  model: 'gemini-3-flash-preview:cloud' },
   };
-  const info   = map[model] || { provider: 'default', model: 'default' };
-  const keyObj = agent?.aiKeys?.[info.provider];
-  const apiKey = keyObj?.enabled && keyObj?.key ? keyObj.key : null;
+
+  const info = map[model] || { provider: 'ollama', model: 'default' };  // default → Ollama fallback
+
+  // Only attach apiKey for paid providers (Claude, OpenAI, Gemini)
+  const paidProviders = ['claude', 'openai', 'gemini'];
+  let apiKey = null;
+  if (paidProviders.includes(info.provider)) {
+    const keyObj = agent?.aiKeys?.[info.provider];
+    apiKey = keyObj?.enabled && keyObj?.key ? keyObj.key : null;
+  }
+
   return { ...info, apiKey };
 }
 
