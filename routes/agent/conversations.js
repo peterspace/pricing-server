@@ -6,7 +6,296 @@ const AgentConversation = require('../../models/AgentConversation');
 const AgentUser = require('../../models/AgentUser');
 const { agentProtect } = require('../../middleware/agentAuth');
 
-// router.use(agentProtect);
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function getModelInfo(model, agent) {
+  // Keys must match the ROUTE_MAP in WF1 Set Route node: "provider:model"
+  const map = {
+    // ── Anthropic Claude ────────────────────────────────────────────────────
+    'claude-sonnet-4-6': { provider: 'claude', model: 'claude-sonnet-4-6' },
+    'claude-opus-4-6': { provider: 'claude', model: 'claude-opus-4-6' },
+    'claude-haiku-4-5': {
+      provider: 'claude',
+      model: 'claude-haiku-4-5-20251001',
+    },
+    // ── OpenAI ──────────────────────────────────────────────────────────────
+    'gpt-5.4-pro': { provider: 'openai', model: 'gpt-5.4-pro' },
+    'gpt-5.1': { provider: 'openai', model: 'gpt-5.1' },
+    'gpt-5-mini': { provider: 'openai', model: 'gpt-5-mini' },
+    'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
+    // ── Google Gemini ────────────────────────────────────────────────────────
+    // 'gemini-1.5-pro':             { provider: 'gemini',  model: 'gemini-1.5-pro' },
+    // 'gemini-1.5-flash':           { provider: 'gemini',  model: 'gemini-1.5-flash' },
+    // ── Ollama (your server credentials — no user key needed) ───────────────
+    'gemma4-31b': { provider: 'ollama', model: 'gemma4:31b-cloud' },
+    'qwen3-vl-235b': { provider: 'ollama', model: 'qwen3-vl:235b-cloud' },
+    'qwen3-5-397b': { provider: 'ollama', model: 'qwen3.5:397b-cloud' },
+    // 'gemini-3-flash-preview':     { provider: 'ollama',  model: 'gemini-3-flash-preview:cloud' },
+  };
+
+  const info = map[model] || {
+    provider: 'ollama',
+    model: 'qwen3.5:397b-cloud',
+  }; // unknown → Qwen fallback
+
+  // Only attach apiKey for paid providers (Claude, OpenAI, Gemini)
+  const paidProviders = ['claude', 'openai', 'gemini'];
+  let apiKey = null;
+  if (paidProviders.includes(info.provider)) {
+    const keyObj = agent?.aiKeys?.[info.provider];
+    apiKey = keyObj?.enabled && keyObj?.key ? keyObj.key : null;
+  }
+
+  return { ...info, apiKey };
+}
+
+function buildEnrichedPrompt(conv) {
+  const parts = [];
+  const userMsgs = conv.messages.filter((m) => m.role === 'user');
+  if (userMsgs[0]) parts.push('## Original request\n' + userMsgs[0].content);
+  if (conv.clarification?.steps?.length) {
+    parts.push('\n## Confirmed workflow understanding');
+    conv.clarification.steps.forEach((s) => {
+      parts.push(`\n### Step ${s.number}: ${s.title}\n${s.description}`);
+    });
+  }
+  if (userMsgs.length > 1) {
+    parts.push('\n## Additional context from conversation');
+    userMsgs.slice(1).forEach((m) => parts.push(m.content));
+  }
+  return parts.join('\n');
+}
+
+//============================{WF1 Processes}==========================
+
+// GET /api/agent/conversations/:id/clarification — poll for WF1 result
+router.get('/:id/clarification', async (req, res) => {
+  try {
+    const conv = await AgentConversation.findOne({
+      _id: req.params.id,
+      // agentUserId: req.agent._id,
+    })
+      .select('clarification analysisStatus updatedAt')
+      .lean();
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
+
+    if (conv.clarification?.understood) {
+      return res.json({ status: 'ready', clarification: conv.clarification });
+    }
+    if (conv.analysisStatus === 'failed') {
+      return res.json({ status: 'failed' });
+    }
+
+    // Auto-expire: if stuck in clarifying for > 12 min (n8n probably crashed),
+    // reset to idle so a refreshed client doesn't resume polling indefinitely
+    if (conv.analysisStatus === 'clarifying') {
+      const stuckMs = Date.now() - new Date(conv.updatedAt).getTime();
+      if (stuckMs > 12 * 60 * 1000) {
+        await AgentConversation.findByIdAndUpdate(req.params.id, {
+          analysisStatus: 'idle',
+        });
+        return res.json({ status: 'expired' });
+      }
+    }
+
+    res.json({ status: 'thinking' });
+  } catch {
+    res.status(500).json({ message: 'Server error.' });
+  }
+});
+
+// POST /api/agent/conversations/:id/clarification — poll for WF1 result
+router.post('/:conversationId/clarification', async (req, res) => {
+  const conversationId = req.params.conversationId.toUpperCase();
+
+  console.log({ conversationId });
+  try {
+    const conv = await AgentConversation.findOne({
+      _id: req.params.conversationId,
+    })
+      .select('clarification analysisStatus updatedAt')
+      .lean();
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
+
+    if (conv.clarification?.understood) {
+      return res.json({ status: 'ready', clarification: conv.clarification });
+    }
+    if (conv.analysisStatus === 'failed') {
+      return res.json({ status: 'failed' });
+    }
+
+    // Auto-expire: if stuck in clarifying for > 12 min (n8n probably crashed),
+    // reset to idle so a refreshed client doesn't resume polling indefinitely
+    if (conv.analysisStatus === 'clarifying') {
+      const stuckMs = Date.now() - new Date(conv.updatedAt).getTime();
+      if (stuckMs > 12 * 60 * 1000) {
+        await AgentConversation.findByIdAndUpdate(req.params.conversationId, {
+          analysisStatus: 'idle',
+        });
+        return res.json({ status: 'expired' });
+      }
+    }
+
+    res.json({ status: 'thinking' });
+  } catch {
+    res.status(500).json({ message: 'Server error.' });
+  }
+});
+
+// POST /api/quotes/:quoteId/clarification — WF1 production callback
+router.post('/:id/clarificationTest', async (req, res) => {
+  const conversationId = req.params.id.toUpperCase();
+  const secret = process.env.N8N_WEBHOOK_SECRET;
+
+  // if (secret && req.headers['x-webhook-secret'] !== secret) {
+  //   return res.status(401).json({ message: 'Unauthorized' });
+  // }
+
+  const { clarification } = req.body;
+  if (!clarification?.understood) {
+    return res
+      .status(400)
+      .json({ message: 'clarification.understood is required.' });
+  }
+
+  try {
+    // ── FIX: reset analysisStatus to 'processing' so polling doesn't return 'failed'
+    // when this quote had a previous failed attempt
+    await AgentConversation.findOneAndUpdate(
+      { _id: req.params.id },
+      {
+        clarification,
+        status: 'clarified',
+        analysisStatus: 'processing',
+        wf1CompletedAt: new Date(),
+      },
+    );
+    console.log('WF1 callback saved clarification for:', conversationId);
+    res.json({ message: 'Clarification saved.', conversationId });
+  } catch (err) {
+    console.error('Clarification callback error:', err.message);
+    res.status(500).json({ message: 'Failed to save clarification.' });
+  }
+});
+
+//============================{WF23 Processes}==========================
+
+// POST /api/agent/conversations/:id/result — WF23-Agent callback from n8n
+router.post('/:id/result', async (req, res) => {
+  const secret = process.env.N8N_WEBHOOK_SECRET;
+  // if (secret && req.headers['x-webhook-secret'] !== secret) {
+  //   return res.status(401).json({ message: 'Unauthorized' });
+  // }
+
+  const bodyRaw = Array.isArray(req.body) ? req.body[0] : req.body;
+  let { analysis, workflow_json, summary } = bodyRaw;
+
+  function safeParse(v) {
+    if (!v || typeof v === 'object') return v;
+    try {
+      return JSON.parse(v);
+    } catch {
+      return v;
+    }
+  }
+  analysis = safeParse(analysis);
+  workflow_json = safeParse(workflow_json);
+  summary = safeParse(summary);
+
+  if (!analysis || !workflow_json) {
+    return res
+      .status(400)
+      .json({ message: 'analysis and workflow_json are required.' });
+  }
+
+  try {
+    const enrichedAnalysis = {
+      ...analysis,
+      workflow_summary: analysis.workflow_summary || summary?.description || '',
+      workflow_name: summary?.workflow_name || analysis.workflow_name || '',
+      node_count: summary?.node_count || analysis.node_count || 0,
+    };
+
+    const conv = await AgentConversation.findByIdAndUpdate(
+      req.params.id,
+      {
+        analysis: enrichedAnalysis,
+        workflowJson: workflow_json,
+        analysisStatus: 'ready',
+        $push: {
+          messages: {
+            role: 'assistant',
+            content: `Here's your workflow: ${enrichedAnalysis.workflow_name || 'Automation Workflow'}`,
+            workflow: workflow_json,
+            analysis: enrichedAnalysis,
+          },
+        },
+      },
+      { new: true },
+    );
+
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
+    console.log(`WF23-Agent result saved for conv ${req.params.id}`);
+    res.json({ message: 'Result saved.', conversationId: req.params.id });
+  } catch (err) {
+    console.error('WF23-Agent result error:', err.message);
+    res.status(500).json({ message: 'Failed to save result.' });
+  }
+});
+
+// POST /api/agent/conversations/:id/clarification — WF1-Agent production callback
+router.post('/:id/clarification', async (req, res) => {
+  const secret = process.env.N8N_WEBHOOK_SECRET;
+  // if (secret && req.headers['x-webhook-secret'] !== secret) {
+  //   return res.status(401).json({ message: 'Unauthorized' });
+  // }
+
+  const { clarification, agentUserId } = req.body;
+  if (!clarification?.understood) {
+    return res
+      .status(400)
+      .json({ message: 'clarification.understood is required.' });
+  }
+
+  try {
+    const conv = await AgentConversation.findByIdAndUpdate(
+      req.params.id,
+      {
+        clarification,
+        analysisStatus: 'idle',
+        $push: {
+          messages: {
+            role: 'assistant',
+            content: clarification.greeting,
+            clarification,
+          },
+        },
+      },
+      { new: true },
+    );
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
+
+    // ── FIX: use agentUserId from conv (reliable) not from body
+    await AgentUser.findByIdAndUpdate(conv.agentUserId, {
+      $inc: { quotesUsedThisMonth: 1 },
+    });
+
+    res.json({
+      message: 'Clarification saved.',
+      conversationId: req.params.id,
+    });
+  } catch (err) {
+    console.error('WF1-Agent callback error:', err.message);
+    res.status(500).json({ message: 'Failed to save clarification.' });
+  }
+});
+
+//============================{Protected Routes}==========================
+
+router.use(agentProtect);
 
 // GET /api/agent/conversations
 router.get('/', async (req, res) => {
@@ -199,118 +488,6 @@ router.post('/:id/message', async (req, res) => {
   }
 });
 
-// GET /api/agent/conversations/:id/clarification — poll for WF1 result
-router.get('/:id/clarification', async (req, res) => {
-  try {
-    const conv = await AgentConversation.findOne({
-      _id: req.params.id,
-      agentUserId: req.agent._id,
-    })
-      .select('clarification analysisStatus updatedAt')
-      .lean();
-    if (!conv)
-      return res.status(404).json({ message: 'Conversation not found.' });
-
-    if (conv.clarification?.understood) {
-      return res.json({ status: 'ready', clarification: conv.clarification });
-    }
-    if (conv.analysisStatus === 'failed') {
-      return res.json({ status: 'failed' });
-    }
-
-    // Auto-expire: if stuck in clarifying for > 12 min (n8n probably crashed),
-    // reset to idle so a refreshed client doesn't resume polling indefinitely
-    if (conv.analysisStatus === 'clarifying') {
-      const stuckMs = Date.now() - new Date(conv.updatedAt).getTime();
-      if (stuckMs > 12 * 60 * 1000) {
-        await AgentConversation.findByIdAndUpdate(req.params.id, {
-          analysisStatus: 'idle',
-        });
-        return res.json({ status: 'expired' });
-      }
-    }
-
-    res.json({ status: 'thinking' });
-  } catch {
-    res.status(500).json({ message: 'Server error.' });
-  }
-});
-
-// GET /api/agent/conversations/:id/clarification — poll for WF1 result
-router.post('/:conversationId/clarification', async (req, res) => {
-  const conversationId = req.params.conversationId.toUpperCase();
-
-  console.log({ conversationId });
-  try {
-    const conv = await AgentConversation.findOne({
-      _id: req.params.conversationId,
-    })
-      .select('clarification analysisStatus updatedAt')
-      .lean();
-    if (!conv)
-      return res.status(404).json({ message: 'Conversation not found.' });
-
-    if (conv.clarification?.understood) {
-      return res.json({ status: 'ready', clarification: conv.clarification });
-    }
-    if (conv.analysisStatus === 'failed') {
-      return res.json({ status: 'failed' });
-    }
-
-    // Auto-expire: if stuck in clarifying for > 12 min (n8n probably crashed),
-    // reset to idle so a refreshed client doesn't resume polling indefinitely
-    if (conv.analysisStatus === 'clarifying') {
-      const stuckMs = Date.now() - new Date(conv.updatedAt).getTime();
-      if (stuckMs > 12 * 60 * 1000) {
-        await AgentConversation.findByIdAndUpdate(req.params.conversationId, {
-          analysisStatus: 'idle',
-        });
-        return res.json({ status: 'expired' });
-      }
-    }
-
-    res.json({ status: 'thinking' });
-  } catch {
-    res.status(500).json({ message: 'Server error.' });
-  }
-});
-
-// POST /api/quotes/:quoteId/clarification — WF1 production callback
-router.post('/:id/clarificationTest', async (req, res) => {
-  const conversationId = req.params.id.toUpperCase();
-  const secret = process.env.N8N_WEBHOOK_SECRET;
-
-  // if (secret && req.headers['x-webhook-secret'] !== secret) {
-  //   return res.status(401).json({ message: 'Unauthorized' });
-  // }
-
-  const { clarification } = req.body;
-  if (!clarification?.understood) {
-    return res
-      .status(400)
-      .json({ message: 'clarification.understood is required.' });
-  }
-
-  try {
-    // ── FIX: reset analysisStatus to 'processing' so polling doesn't return 'failed'
-    // when this quote had a previous failed attempt
-    await AgentConversation.findOneAndUpdate(
-      { _id: req.params.id },
-      {
-        clarification,
-        status: 'clarified',
-        analysisStatus: 'processing',
-        wf1CompletedAt: new Date(),
-      },
-    );
-    console.log('WF1 callback saved clarification for:', conversationId);
-    res.json({ message: 'Clarification saved.', conversationId });
-  } catch (err) {
-    console.error('Clarification callback error:', err.message);
-    res.status(500).json({ message: 'Failed to save clarification.' });
-  }
-});
-
 // POST /api/agent/conversations/:id/cancel — client-side cancel, resets stuck status
 router.post('/:id/cancel', async (req, res) => {
   try {
@@ -419,176 +596,5 @@ router.get('/:id/status', async (req, res) => {
     res.status(500).json({ message: 'Server error.' });
   }
 });
-
-// POST /api/agent/conversations/:id/result — WF23-Agent callback from n8n
-router.post('/:id/result', async (req, res) => {
-  const secret = process.env.N8N_WEBHOOK_SECRET;
-  // if (secret && req.headers['x-webhook-secret'] !== secret) {
-  //   return res.status(401).json({ message: 'Unauthorized' });
-  // }
-
-  const bodyRaw = Array.isArray(req.body) ? req.body[0] : req.body;
-  let { analysis, workflow_json, summary } = bodyRaw;
-
-  function safeParse(v) {
-    if (!v || typeof v === 'object') return v;
-    try {
-      return JSON.parse(v);
-    } catch {
-      return v;
-    }
-  }
-  analysis = safeParse(analysis);
-  workflow_json = safeParse(workflow_json);
-  summary = safeParse(summary);
-
-  if (!analysis || !workflow_json) {
-    return res
-      .status(400)
-      .json({ message: 'analysis and workflow_json are required.' });
-  }
-
-  try {
-    const enrichedAnalysis = {
-      ...analysis,
-      workflow_summary: analysis.workflow_summary || summary?.description || '',
-      workflow_name: summary?.workflow_name || analysis.workflow_name || '',
-      node_count: summary?.node_count || analysis.node_count || 0,
-    };
-
-    const conv = await AgentConversation.findByIdAndUpdate(
-      req.params.id,
-      {
-        analysis: enrichedAnalysis,
-        workflowJson: workflow_json,
-        analysisStatus: 'ready',
-        $push: {
-          messages: {
-            role: 'assistant',
-            content: `Here's your workflow: ${enrichedAnalysis.workflow_name || 'Automation Workflow'}`,
-            workflow: workflow_json,
-            analysis: enrichedAnalysis,
-          },
-        },
-      },
-      { new: true },
-    );
-
-    if (!conv)
-      return res.status(404).json({ message: 'Conversation not found.' });
-    console.log(`WF23-Agent result saved for conv ${req.params.id}`);
-    res.json({ message: 'Result saved.', conversationId: req.params.id });
-  } catch (err) {
-    console.error('WF23-Agent result error:', err.message);
-    res.status(500).json({ message: 'Failed to save result.' });
-  }
-});
-
-// POST /api/agent/conversations/:id/clarification — WF1-Agent production callback
-router.post('/:id/clarification', async (req, res) => {
-  const secret = process.env.N8N_WEBHOOK_SECRET;
-  // if (secret && req.headers['x-webhook-secret'] !== secret) {
-  //   return res.status(401).json({ message: 'Unauthorized' });
-  // }
-
-  const { clarification, agentUserId } = req.body;
-  if (!clarification?.understood) {
-    return res
-      .status(400)
-      .json({ message: 'clarification.understood is required.' });
-  }
-
-  try {
-    const conv = await AgentConversation.findByIdAndUpdate(
-      req.params.id,
-      {
-        clarification,
-        analysisStatus: 'idle',
-        $push: {
-          messages: {
-            role: 'assistant',
-            content: clarification.greeting,
-            clarification,
-          },
-        },
-      },
-      { new: true },
-    );
-    if (!conv)
-      return res.status(404).json({ message: 'Conversation not found.' });
-
-    // ── FIX: use agentUserId from conv (reliable) not from body
-    await AgentUser.findByIdAndUpdate(conv.agentUserId, {
-      $inc: { quotesUsedThisMonth: 1 },
-    });
-
-    res.json({
-      message: 'Clarification saved.',
-      conversationId: req.params.id,
-    });
-  } catch (err) {
-    console.error('WF1-Agent callback error:', err.message);
-    res.status(500).json({ message: 'Failed to save clarification.' });
-  }
-});
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function getModelInfo(model, agent) {
-  // Keys must match the ROUTE_MAP in WF1 Set Route node: "provider:model"
-  const map = {
-    // ── Anthropic Claude ────────────────────────────────────────────────────
-    'claude-sonnet-4-6': { provider: 'claude', model: 'claude-sonnet-4-6' },
-    'claude-opus-4-6': { provider: 'claude', model: 'claude-opus-4-6' },
-    'claude-haiku-4-5': {
-      provider: 'claude',
-      model: 'claude-haiku-4-5-20251001',
-    },
-    // ── OpenAI ──────────────────────────────────────────────────────────────
-    'gpt-5.4-pro': { provider: 'openai', model: 'gpt-5.4-pro' },
-    'gpt-5.1': { provider: 'openai', model: 'gpt-5.1' },
-    'gpt-5-mini': { provider: 'openai', model: 'gpt-5-mini' },
-    'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
-    // ── Google Gemini ────────────────────────────────────────────────────────
-    // 'gemini-1.5-pro':             { provider: 'gemini',  model: 'gemini-1.5-pro' },
-    // 'gemini-1.5-flash':           { provider: 'gemini',  model: 'gemini-1.5-flash' },
-    // ── Ollama (your server credentials — no user key needed) ───────────────
-    'gemma4-31b': { provider: 'ollama', model: 'gemma4:31b-cloud' },
-    'qwen3-vl-235b': { provider: 'ollama', model: 'qwen3-vl:235b-cloud' },
-    'qwen3-5-397b': { provider: 'ollama', model: 'qwen3.5:397b-cloud' },
-    // 'gemini-3-flash-preview':     { provider: 'ollama',  model: 'gemini-3-flash-preview:cloud' },
-  };
-
-  const info = map[model] || {
-    provider: 'ollama',
-    model: 'qwen3.5:397b-cloud',
-  }; // unknown → Qwen fallback
-
-  // Only attach apiKey for paid providers (Claude, OpenAI, Gemini)
-  const paidProviders = ['claude', 'openai', 'gemini'];
-  let apiKey = null;
-  if (paidProviders.includes(info.provider)) {
-    const keyObj = agent?.aiKeys?.[info.provider];
-    apiKey = keyObj?.enabled && keyObj?.key ? keyObj.key : null;
-  }
-
-  return { ...info, apiKey };
-}
-
-function buildEnrichedPrompt(conv) {
-  const parts = [];
-  const userMsgs = conv.messages.filter((m) => m.role === 'user');
-  if (userMsgs[0]) parts.push('## Original request\n' + userMsgs[0].content);
-  if (conv.clarification?.steps?.length) {
-    parts.push('\n## Confirmed workflow understanding');
-    conv.clarification.steps.forEach((s) => {
-      parts.push(`\n### Step ${s.number}: ${s.title}\n${s.description}`);
-    });
-  }
-  if (userMsgs.length > 1) {
-    parts.push('\n## Additional context from conversation');
-    userMsgs.slice(1).forEach((m) => parts.push(m.content));
-  }
-  return parts.join('\n');
-}
 
 module.exports = router;
