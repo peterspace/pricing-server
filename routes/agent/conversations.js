@@ -295,9 +295,9 @@ router.get('/:id/status', async (req, res) => {
 // POST /api/agent/conversations/:id/result — WF23-Agent callback from n8n
 router.post('/:id/result', async (req, res) => {
   const secret = process.env.N8N_WEBHOOK_SECRET;
-  if (secret && req.headers['x-webhook-secret'] !== secret) {
-    return res.status(401).json({ message: 'Unauthorized' });
-  }
+  // if (secret && req.headers['x-webhook-secret'] !== secret) {
+  //   return res.status(401).json({ message: 'Unauthorized' });
+  // }
 
   const bodyRaw = Array.isArray(req.body) ? req.body[0] : req.body;
   let { analysis, workflow_json, summary } = bodyRaw;
@@ -352,9 +352,9 @@ router.post('/:id/result', async (req, res) => {
 // POST /api/agent/conversations/:id/clarification — WF1-Agent production callback
 router.post('/:id/clarification', async (req, res) => {
   const secret = process.env.N8N_WEBHOOK_SECRET;
-  if (secret && req.headers['x-webhook-secret'] !== secret) {
-    return res.status(401).json({ message: 'Unauthorized' });
-  }
+  // if (secret && req.headers['x-webhook-secret'] !== secret) {
+  //   return res.status(401).json({ message: 'Unauthorized' });
+  // }
 
   const { clarification, agentUserId } = req.body;
   if (!clarification?.understood) {
@@ -400,13 +400,13 @@ function getModelInfo(model, agent) {
     'gpt-5-mini':                 { provider: 'openai',  model: 'gpt-5-mini' },
     'gpt-4o':                     { provider: 'openai',  model: 'gpt-4o' },
     // ── Google Gemini ────────────────────────────────────────────────────────
-    'gemini-1.5-pro':             { provider: 'gemini',  model: 'gemini-1.5-pro' },
-    'gemini-1.5-flash':           { provider: 'gemini',  model: 'gemini-1.5-flash' },
+    // 'gemini-1.5-pro':             { provider: 'gemini',  model: 'gemini-1.5-pro' },
+    // 'gemini-1.5-flash':           { provider: 'gemini',  model: 'gemini-1.5-flash' },
     // ── Ollama (your server credentials — no user key needed) ───────────────
     'gemma4-31b':                 { provider: 'ollama',  model: 'gemma4:31b-cloud' },
     'qwen3-vl-235b':              { provider: 'ollama',  model: 'qwen3-vl:235b-cloud' },
     'qwen3-5-397b':               { provider: 'ollama',  model: 'qwen3.5:397b-cloud' },
-    'gemini-3-flash-preview':     { provider: 'ollama',  model: 'gemini-3-flash-preview:cloud' },
+    // 'gemini-3-flash-preview':     { provider: 'ollama',  model: 'gemini-3-flash-preview:cloud' },
   };
 
   const info = map[model] || { provider: 'ollama', model: 'qwen3.5:397b-cloud' };  // unknown → Qwen fallback
