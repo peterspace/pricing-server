@@ -180,9 +180,9 @@ router.post('/:quoteId/clarification', async (req, res) => {
   const quoteId = req.params.quoteId.toUpperCase();
   const secret  = process.env.N8N_WEBHOOK_SECRET;
 
-  if (secret && req.headers['x-webhook-secret'] !== secret) {
-    return res.status(401).json({ message: 'Unauthorized' });
-  }
+  // if (secret && req.headers['x-webhook-secret'] !== secret) {
+  //   return res.status(401).json({ message: 'Unauthorized' });
+  // }
 
   const { clarification } = req.body;
   if (!clarification?.understood) {
@@ -214,9 +214,9 @@ router.post('/:quoteId/result', async (req, res) => {
   const { quoteId } = req.params;
   const secret = process.env.N8N_WEBHOOK_SECRET;
 
-  if (secret && req.headers['x-webhook-secret'] !== secret) {
-    return res.status(401).json({ message: 'Unauthorized' });
-  }
+  // if (secret && req.headers['x-webhook-secret'] !== secret) {
+  //   return res.status(401).json({ message: 'Unauthorized' });
+  // }
 
   // n8n sometimes wraps the body in an array — unwrap if needed
   const bodyRaw = Array.isArray(req.body) ? req.body[0] : req.body;
