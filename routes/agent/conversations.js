@@ -6,7 +6,7 @@ const AgentConversation = require('../../models/AgentConversation');
 const AgentUser = require('../../models/AgentUser');
 const { agentProtect } = require('../../middleware/agentAuth');
 
-router.use(agentProtect);
+// router.use(agentProtect);
 
 // GET /api/agent/conversations
 router.get('/', async (req, res) => {
