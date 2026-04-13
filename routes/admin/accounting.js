@@ -4,7 +4,8 @@ const router     = express.Router();
 const { protect }= require('../../middleware/auth');
 const Payment    = require('../../models/Payment');
 const Subscription = require('../../models/Subscription');
-const stripe       = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const Stripe       = require('stripe');
+const stripe       = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 function periodStart(period) {
   const now = new Date();

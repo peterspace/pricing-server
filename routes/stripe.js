@@ -1,7 +1,8 @@
 'use strict';
 const express  = require('express');
 const router   = express.Router();
-const stripe   = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const Stripe   = require('stripe');
+const stripe   = new Stripe(process.env.STRIPE_SECRET_KEY);
 const Quote    = require('../models/Quote');
 const Payment  = require('../models/Payment');
 const Subscription = require('../models/Subscription');

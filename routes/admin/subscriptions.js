@@ -4,7 +4,8 @@ const router     = express.Router();
 const { protect }= require('../../middleware/auth');
 const audit      = require('../../middleware/audit');
 const Subscription = require('../../models/Subscription');
-const stripe       = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const Stripe       = require('stripe');
+const stripe       = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // GET /api/admin/subscriptions
 router.get('/', protect, async (req, res) => {
