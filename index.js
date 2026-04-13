@@ -58,6 +58,8 @@ app.use('/api/quotes',  require('./routes/quotes')); // includes all /api/quotes
 app.use('/api/agent/auth/google',    require('./routes/agent/google'));
 app.use('/api/agent/auth',           require('./routes/agent/auth'));
 app.use('/api/agent/conversations',  require('./routes/agent/conversations'));
+app.use('/api/agent/clarify',        require('./routes/agent/clarify'));
+app.use('/api/agent/analyse',        require('./routes/agent/analyse'));
 app.use('/api/agent/settings',       require('./routes/agent/settings'));
 
 // ── Admin routes (all protected by JWT in individual routers) ─────────────────
