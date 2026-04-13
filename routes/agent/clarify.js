@@ -43,12 +43,16 @@ router.post('/', async (req, res) => {
       return res.json({ conversationId, status: 'ready', clarification: conv.clarification });
     }
 
-    // Quota check
-    req.agent.resetQuotaIfNeeded();
-    if (!req.agent.hasQuotaRemaining()) {
-      return res.status(429).json({
-        message: `You've used all ${req.agent.quotaLimit()} workflows this month. Upgrade to continue.`,
-      });
+    // Quota check — only on the FIRST clarification of a new workflow.
+    // Refinements (going back to clarify an existing conversation) don't consume quota.
+    const isRefinement = !!(conv.clarification?.understood || conv.request);
+    if (!isRefinement) {
+      req.agent.resetQuotaIfNeeded();
+      if (!req.agent.hasQuotaRemaining()) {
+        return res.status(429).json({
+          message: `You've used all ${req.agent.quotaLimit()} workflows this month. Upgrade to continue.`,
+        });
+      }
     }
 
     // Reset for new WF1 run
