@@ -1,10 +1,9 @@
 'use strict';
-const express           = require('express');
-const router            = express.Router();
+const express = require('express');
+const router = express.Router();
 const AgentConversation = require('../../models/AgentConversation');
-const AgentUser         = require('../../models/AgentUser');
-const { agentProtect }  = require('../../middleware/agentAuth');
-
+const AgentUser = require('../../models/AgentUser');
+const { agentProtect } = require('../../middleware/agentAuth');
 
 // ── n8n Callbacks ─────────────────────────────────────────────────────────────
 
@@ -17,7 +16,9 @@ router.post('/:id/clarification', async (req, res) => {
 
   const { clarification } = req.body;
   if (!clarification?.understood) {
-    return res.status(400).json({ message: 'clarification.understood is required.' });
+    return res
+      .status(400)
+      .json({ message: 'clarification.understood is required.' });
   }
 
   try {
@@ -25,18 +26,33 @@ router.post('/:id/clarification', async (req, res) => {
       req.params.id,
       {
         clarification,
-        status:         'clarified',
+        status: 'clarified',
         analysisStatus: 'processing',
         wf1CompletedAt: new Date(),
-        $push: { messages: { role: 'assistant', content: clarification.greeting, clarification } },
+        $push: {
+          messages: {
+            role: 'assistant',
+            content: clarification.greeting,
+            clarification,
+          },
+        },
       },
-      { new: true }
+      { new: true },
     );
-    if (!conv) return res.status(404).json({ message: 'Conversation not found.' });
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
 
-    await AgentUser.findByIdAndUpdate(conv.agentUserId, { $inc: { quotesUsedThisMonth: 1 } });
-    console.log('WF1-Agent callback saved clarification for conv:', req.params.id);
-    res.json({ message: 'Clarification saved.', conversationId: req.params.id });
+    await AgentUser.findByIdAndUpdate(conv.agentUserId, {
+      $inc: { quotesUsedThisMonth: 1 },
+    });
+    console.log(
+      'WF1-Agent callback saved clarification for conv:',
+      req.params.id,
+    );
+    res.json({
+      message: 'Clarification saved.',
+      conversationId: req.params.id,
+    });
   } catch (err) {
     console.error('WF1-Agent callback error:', err.message);
     res.status(500).json({ message: 'Failed to save clarification.' });
@@ -45,66 +61,63 @@ router.post('/:id/clarification', async (req, res) => {
 
 // POST /api/agent/conversations/:id/result — WF23-Agent callback
 router.post('/:id/result', async (req, res) => {
-  // Secret check commented out — matches client pattern, re-enable in production
-  // const secret = process.env.N8N_WEBHOOK_SECRET;
-  // if (secret && req.headers['x-webhook-secret'] !== secret) {
-  //   return res.status(401).json({ message: 'Unauthorized' });
-  // }
+  const secret = process.env.N8N_WEBHOOK_SECRET;
+  if (secret && req.headers['x-webhook-secret'] !== secret) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
 
-  // n8n sometimes wraps the body in an array — unwrap if needed
   const bodyRaw = Array.isArray(req.body) ? req.body[0] : req.body;
   let { analysis, workflow_json, summary } = bodyRaw;
 
-  // n8n may send objects as JSON strings — parse defensively
   function safeParse(v) {
-    if (v === null || v === undefined) return v;
-    if (typeof v === 'object') return v;
-    try { return JSON.parse(v); } catch { return v; }
+    if (!v || typeof v === 'object') return v;
+    try {
+      return JSON.parse(v);
+    } catch {
+      return v;
+    }
   }
-  analysis      = safeParse(analysis);
+  analysis = safeParse(analysis);
   workflow_json = safeParse(workflow_json);
-  summary       = safeParse(summary);
-
-  console.log(`WF23-Agent result received for conv ${req.params.id}:`, {
-    hasAnalysis: !!analysis,
-    hasWorkflow: !!workflow_json,
-  });
+  summary = safeParse(summary);
 
   if (!analysis || !workflow_json) {
-    console.error('WF23-Agent result missing fields. Body keys:', Object.keys(bodyRaw));
-    return res.status(400).json({ message: 'analysis and workflow_json are required.' });
+    return res
+      .status(400)
+      .json({ message: 'analysis and workflow_json are required.' });
   }
 
   try {
     const enrichedAnalysis = {
       ...analysis,
       workflow_summary: analysis.workflow_summary || summary?.description || '',
-      workflow_name:    summary?.workflow_name    || analysis.workflow_name || '',
-      node_count:       summary?.node_count       || analysis.node_count   || 0,
+      workflow_name: summary?.workflow_name || analysis.workflow_name || '',
+      node_count: summary?.node_count || analysis.node_count || 0,
     };
 
     const conv = await AgentConversation.findByIdAndUpdate(
       req.params.id,
       {
-        analysis:       enrichedAnalysis,
-        workflow:       {
-          json:        workflow_json,
+        analysis: enrichedAnalysis,
+        workflow: {
+          json: workflow_json,
           generatedAt: new Date(),
         },
         analysisStatus: 'ready',
-        status:         'delivered',
+        status: 'delivered',
         $push: {
           messages: {
-            role:     'assistant',
-            content:  `Workflow ready: ${enrichedAnalysis.workflow_name || 'Automation Workflow'}`,
+            role: 'assistant',
+            content: `Workflow ready: ${enrichedAnalysis.workflow_name || 'Automation Workflow'}`,
             analysis: enrichedAnalysis,
           },
         },
       },
-      { new: true }
+      { new: true },
     );
 
-    if (!conv) return res.status(404).json({ message: 'Conversation not found.' });
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
     console.log(`WF23-Agent result saved for conv ${req.params.id}`);
     res.json({ message: 'Result saved.', conversationId: req.params.id });
   } catch (err) {
@@ -114,6 +127,7 @@ router.post('/:id/result', async (req, res) => {
 });
 
 // ── Protected Routes ─────────────────────────────────────────────────────────
+
 router.use(agentProtect);
 
 // ── Conversation CRUD ─────────────────────────────────────────────────────────
@@ -125,9 +139,9 @@ router.get('/', async (req, res) => {
       agentUserId: req.agent._id,
       status: { $ne: 'archived' },
     })
-    .select('_id title model status analysisStatus updatedAt createdAt')
-    .sort({ updatedAt: -1 })
-    .lean();
+      .select('_id title model status analysisStatus updatedAt createdAt')
+      .sort({ updatedAt: -1 })
+      .lean();
     res.json({ conversations: convs });
   } catch {
     res.status(500).json({ message: 'Failed to load conversations.' });
@@ -143,33 +157,36 @@ router.post('/init', async (req, res) => {
     // Return existing if client already has an id
     if (conversationId) {
       const existing = await AgentConversation.findOne({
-        _id: conversationId, agentUserId: req.agent._id,
-      }).select('_id title status analysisStatus clarification model').lean();
+        _id: conversationId,
+        agentUserId: req.agent._id,
+      })
+        .select('_id title status analysisStatus clarification model')
+        .lean();
 
       if (existing) {
         return res.json({
-          conversationId:   existing._id,
-          isExisting:       true,
-          hasClarification: !!(existing.clarification?.understood),
-          model:            existing.model,
+          conversationId: existing._id,
+          isExisting: true,
+          hasClarification: !!existing.clarification?.understood,
+          model: existing.model,
         });
       }
     }
 
     const conv = await AgentConversation.create({
-      agentUserId:    req.agent._id,
-      title:          request.trim().slice(0, 60) || 'New conversation',
-      model:          model,
-      request:        request.trim(),
-      status:         'new',
+      agentUserId: req.agent._id,
+      title: request.trim().slice(0, 60) || 'New conversation',
+      model: model,
+      request: request.trim(),
+      status: 'new',
       analysisStatus: 'processing',
     });
 
     res.status(201).json({
-      conversationId:   conv._id,
-      isExisting:       false,
+      conversationId: conv._id,
+      isExisting: false,
       hasClarification: false,
-      model:            conv.model,
+      model: conv.model,
     });
   } catch (err) {
     console.error('Agent conversations init error:', err.message);
@@ -181,9 +198,11 @@ router.post('/init', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const conv = await AgentConversation.findOne({
-      _id: req.params.id, agentUserId: req.agent._id,
+      _id: req.params.id,
+      agentUserId: req.agent._id,
     }).lean();
-    if (!conv) return res.status(404).json({ message: 'Conversation not found.' });
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
     res.json({ conversation: conv });
   } catch {
     res.status(500).json({ message: 'Server error.' });
@@ -193,14 +212,16 @@ router.get('/:id', async (req, res) => {
 // PATCH /api/agent/conversations/:id — rename
 router.patch('/:id', async (req, res) => {
   const { title } = req.body;
-  if (!title?.trim()) return res.status(400).json({ message: 'Title is required.' });
+  if (!title?.trim())
+    return res.status(400).json({ message: 'Title is required.' });
   try {
     const conv = await AgentConversation.findOneAndUpdate(
       { _id: req.params.id, agentUserId: req.agent._id },
       { title: title.trim() },
-      { new: true }
+      { new: true },
     ).lean();
-    if (!conv) return res.status(404).json({ message: 'Conversation not found.' });
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
     res.json({ conversation: conv });
   } catch {
     res.status(500).json({ message: 'Server error.' });
@@ -212,7 +233,7 @@ router.delete('/:id', async (req, res) => {
   try {
     await AgentConversation.findOneAndUpdate(
       { _id: req.params.id, agentUserId: req.agent._id },
-      { status: 'archived' }
+      { status: 'archived' },
     );
     res.json({ message: 'Conversation archived.' });
   } catch {
@@ -226,12 +247,20 @@ router.delete('/:id', async (req, res) => {
 router.get('/:id/clarification', async (req, res) => {
   try {
     const conv = await AgentConversation.findOne({
-      _id: req.params.id, agentUserId: req.agent._id,
-    }).select('status analysisStatus clarification updatedAt').lean();
-    if (!conv) return res.status(404).json({ message: 'Conversation not found.' });
+      _id: req.params.id,
+      agentUserId: req.agent._id,
+    })
+      .select('status analysisStatus clarification updatedAt')
+      .lean();
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
 
     if (conv.status === 'clarified' && conv.clarification?.understood) {
-      return res.json({ conversationId: req.params.id, status: 'ready', clarification: conv.clarification });
+      return res.json({
+        conversationId: req.params.id,
+        status: 'ready',
+        clarification: conv.clarification,
+      });
     }
     if (conv.analysisStatus === 'failed' && !conv.clarification?.understood) {
       return res.json({ conversationId: req.params.id, status: 'failed' });
@@ -242,7 +271,8 @@ router.get('/:id/clarification', async (req, res) => {
       const stuckMs = Date.now() - new Date(conv.updatedAt).getTime();
       if (stuckMs > 12 * 60 * 1000) {
         await AgentConversation.findByIdAndUpdate(req.params.id, {
-          analysisStatus: 'failed', status: 'new',
+          analysisStatus: 'failed',
+          status: 'new',
         });
         return res.json({ conversationId: req.params.id, status: 'expired' });
       }
@@ -258,17 +288,21 @@ router.get('/:id/clarification', async (req, res) => {
 router.get('/:id/status', async (req, res) => {
   try {
     const conv = await AgentConversation.findOne({
-      _id: req.params.id, agentUserId: req.agent._id,
-    }).select('status analysisStatus analysis workflow updatedAt').lean();
-    if (!conv) return res.status(404).json({ message: 'Conversation not found.' });
+      _id: req.params.id,
+      agentUserId: req.agent._id,
+    })
+      .select('status analysisStatus analysis workflow updatedAt')
+      .lean();
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
 
     if (conv.analysisStatus === 'ready' && conv.workflow?.json) {
       return res.json({
         conversationId: req.params.id,
-        status:         'ready',
+        status: 'ready',
         analysisStatus: 'ready',
-        analysis:       conv.analysis,
-        workflowJson:   conv.workflow.json,
+        analysis: conv.analysis,
+        workflowJson: conv.workflow.json,
       });
     }
     if (conv.analysisStatus === 'failed') {
@@ -280,13 +314,18 @@ router.get('/:id/status', async (req, res) => {
       const stuckMs = Date.now() - new Date(conv.updatedAt).getTime();
       if (stuckMs > 15 * 60 * 1000) {
         await AgentConversation.findByIdAndUpdate(req.params.id, {
-          analysisStatus: 'failed', status: 'clarified',
+          analysisStatus: 'failed',
+          status: 'clarified',
         });
         return res.json({ conversationId: req.params.id, status: 'failed' });
       }
     }
 
-    res.json({ conversationId: req.params.id, status: 'processing', analysisStatus: 'processing' });
+    res.json({
+      conversationId: req.params.id,
+      status: 'processing',
+      analysisStatus: 'processing',
+    });
   } catch {
     res.status(500).json({ message: 'Server error.' });
   }
@@ -296,29 +335,36 @@ router.get('/:id/status', async (req, res) => {
 router.get('/:id/resume', async (req, res) => {
   try {
     const conv = await AgentConversation.findOne({
-      _id: req.params.id, agentUserId: req.agent._id,
-    }).select('_id title model status analysisStatus clarification analysis workflow request').lean();
-    if (!conv) return res.status(404).json({ message: 'Conversation not found.' });
+      _id: req.params.id,
+      agentUserId: req.agent._id,
+    })
+      .select(
+        '_id title model status analysisStatus clarification analysis workflow request',
+      )
+      .lean();
+    if (!conv)
+      return res.status(404).json({ message: 'Conversation not found.' });
 
     // Determine which step to resume at (mirrors client resumeQuote logic)
     let resumeStep = 1;
-    if (conv.request)                          resumeStep = 2; // has request → Clarify
-    if (conv.status === 'clarified')           resumeStep = 2; // clarified → still on Clarify (accept not yet hit)
-    if (conv.status === 'analysing')           resumeStep = 3; // analysing → Analyse step (polling)
-    if (conv.analysisStatus === 'ready')       resumeStep = 4; // done → Quote
-    if (conv.analysisStatus === 'failed' && conv.status !== 'clarified') resumeStep = 2;
+    if (conv.request) resumeStep = 2; // has request → Clarify
+    if (conv.status === 'clarified') resumeStep = 2; // clarified → still on Clarify (accept not yet hit)
+    if (conv.status === 'analysing') resumeStep = 3; // analysing → Analyse step (polling)
+    if (conv.analysisStatus === 'ready') resumeStep = 4; // done → Quote
+    if (conv.analysisStatus === 'failed' && conv.status !== 'clarified')
+      resumeStep = 2;
 
     res.json({
       conversationId: conv._id,
       resumeStep,
-      title:          conv.title,
-      model:          conv.model,
-      status:         conv.status,
+      title: conv.title,
+      model: conv.model,
+      status: conv.status,
       analysisStatus: conv.analysisStatus,
-      request:        conv.request || '',
-      clarification:  conv.clarification || null,
-      analysis:       conv.analysis || null,
-      workflowJson:   conv.workflow?.json || null,
+      request: conv.request || '',
+      clarification: conv.clarification || null,
+      analysis: conv.analysis || null,
+      workflowJson: conv.workflow?.json || null,
     });
   } catch {
     res.status(500).json({ message: 'Server error.' });
@@ -335,7 +381,7 @@ router.post('/:id/cancel', async (req, res) => {
         analysisStatus: 'processing',
       },
       { analysisStatus: 'failed', status: 'new' },
-      { new: true }
+      { new: true },
     );
     res.json({ message: 'Cancelled.', cancelled: !!conv });
   } catch (err) {
@@ -343,7 +389,5 @@ router.post('/:id/cancel', async (req, res) => {
     res.status(500).json({ message: 'Failed to cancel.' });
   }
 });
-
-
 
 module.exports = router;

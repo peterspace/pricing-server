@@ -175,6 +175,7 @@ router.get('/:quoteId/clarification', async (req, res) => {
   }
 });
 
+// ── n8n Callbacks ─────────────────────────────────────────────────────────────
 // POST /api/quotes/:quoteId/clarification — WF1 production callback
 router.post('/:quoteId/clarification', async (req, res) => {
   const quoteId = req.params.quoteId.toUpperCase();
