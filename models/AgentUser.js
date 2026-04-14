@@ -54,6 +54,21 @@ const AgentUserSchema = new mongoose.Schema({
   stripeCustomerId:     { type: String, default: '' },
   stripeSubscriptionId: { type: String, default: '' },
 
+  // Billing address (synced to Stripe customer)
+  billingAddress: {
+    name:       { type: String, default: '' },
+    line1:      { type: String, default: '' },
+    line2:      { type: String, default: '' },
+    city:       { type: String, default: '' },
+    state:      { type: String, default: '' },
+    postalCode: { type: String, default: '' },
+    country:    { type: String, default: '' },
+  },
+
+  // Invoice cache (populated by billing route, cleared on payment events)
+  invoicesCache:    { type: Array,  default: [] },
+  invoicesCachedAt: { type: Date,   default: null },
+
   googleId:  { type: String, default: null },
   lastLogin: { type: Date, default: null },
 }, { timestamps: true });
