@@ -15,8 +15,14 @@ const UserSchema = new mongoose.Schema({
   online:     { type: Boolean, default: false },
   lastSeen:   { type: Date },
   deletedAt:  { type: Date, default: null },
+
+  // ── Portal auth — magic link (passwordless first login) ──────────────────
+  magicLinkToken:  { type: String, default: null, select: false },
+  magicLinkExpiry: { type: Date,   default: null },
+
   // Stripe
   stripeCustomerId: { type: String, default: '' },
+
   // Stats
   quoteCount: { type: Number, default: 0 },
 }, { timestamps: true });
@@ -32,9 +38,16 @@ UserSchema.methods.comparePassword = async function (candidate) {
   return bcrypt.compare(candidate, this.password);
 };
 
+// Virtual: has the user set a password yet?
+UserSchema.virtual('hasPassword').get(function () {
+  return !!this.password;
+});
+
 UserSchema.methods.toPublic = function () {
-  const obj = this.toObject();
+  const obj = this.toObject({ virtuals: true });
   delete obj.password;
+  delete obj.magicLinkToken;
+  delete obj.magicLinkExpiry;
   return obj;
 };
 

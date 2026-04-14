@@ -23,9 +23,11 @@ app.use(
       process.env.CLIENT_URL,
       process.env.ADMIN_URL,
       process.env.AGENT_URL,
+      process.env.PORTAL_URL,
       'http://localhost:5173',
       'http://localhost:5174',
       'http://localhost:5175',
+      'http://localhost:5176',
     ],
     credentials: true,
   }),
@@ -62,6 +64,11 @@ app.use('/api/agent/clarify', require('./routes/agent/clarify'));
 app.use('/api/agent/analyse', require('./routes/agent/analyse'));
 app.use('/api/agent/settings', require('./routes/agent/settings'));
 app.use('/api/agent/billing', require('./routes/agent/billing'));
+
+// ── Customer Portal routes ───────────────────────────────────────────────────
+app.use('/api/customer/auth',    require('./routes/customer/auth'));
+app.use('/api/customer/orders',  require('./routes/customer/orders'));
+app.use('/api/customer/account', require('./routes/customer/account'));
 
 // ── Admin routes (all protected by JWT in individual routers) ─────────────────
 app.use('/api/admin/auth', require('./routes/admin/auth'));
@@ -116,9 +123,9 @@ const server = app.listen(PORT, () => {
   );
 });
 
-// Allow up to 3 minutes for AI analysis endpoints
-server.timeout = 180000;
-server.keepAliveTimeout = 180000;
+// Allow up to 6 minutes for AI analysis endpoints (WF23 can take 3-5 min)
+server.timeout = 360000;
+server.keepAliveTimeout = 360000;
 
 // ── Stuck-quote cleanup job ───────────────────────────────────────────────────
 // Runs every 5 minutes. Marks quotes stuck in 'processing' for > 8 minutes as

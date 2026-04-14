@@ -1,13 +1,23 @@
 'use strict';
-const express = require('express');
-const router  = express.Router();
-const axios   = require('axios');
-const Quote   = require('../models/Quote');
+const express   = require('express');
+const router    = express.Router();
+const axios     = require('axios');
+const rateLimit = require('express-rate-limit');
+const Quote     = require('../models/Quote');
+
+// IP-based rate limiter — 5 clarify requests per IP per hour
+const clarifyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip,
+  message: { message: 'Too many requests from this IP. Please try again in an hour.' },
+  skip: (req) => !!req.headers.authorization, // admin/agent bypass
+});
 
 // POST /api/clarify
-// Requires quoteId (created by /api/quotes/init before this is called).
-// Triggers WF1 fire-and-forget. Client polls GET /api/quotes/:quoteId/clarification.
-router.post('/', async (req, res) => {
+router.post('/', clarifyLimiter, async (req, res) => {
   const {
     quoteId,
     prompt,
@@ -22,6 +32,7 @@ router.post('/', async (req, res) => {
   if (!prompt || prompt.trim().length < 10) {
     return res.status(400).json({ message: 'Please provide a more detailed request.' });
   }
+  // Note: clientEmail/Name/Company are optional at this stage — collected in Your Info step
 
   const n8nBase = process.env.N8N_BASE_URL;
   const secret  = process.env.N8N_WEBHOOK_SECRET;
@@ -37,15 +48,13 @@ router.post('/', async (req, res) => {
       return res.status(404).json({ message: 'Quote not found. Please start over.' });
     }
 
-    // If clarification already exists and prompt hasn't changed — return cached
+    // Return cached clarification if prompt hasn't changed
     if (quote.clarification?.understood && quote.request === prompt.trim()) {
       console.log('Returning cached clarification for:', quoteId);
       return res.json({ quoteId, status: 'ready', clarification: quote.clarification });
     }
 
-    // For refinement rounds, the enriched prompt differs from original request
-    // so it always falls through to reset + re-trigger WF1 — correct behaviour
-    // Reset quote for new WF1 run (also resets cancelled/failed quotes from previous attempts)
+    // Reset quote for new WF1 run
     await Quote.findOneAndUpdate(
       { quoteId: quoteId.toUpperCase() },
       {
@@ -54,6 +63,7 @@ router.post('/', async (req, res) => {
         analysisStatus: 'processing',
         clarification:  null,
         wf1SentAt:      new Date(),
+        $push: { messages: { role: 'user', content: prompt.trim() } },
       }
     );
 
@@ -69,18 +79,13 @@ router.post('/', async (req, res) => {
     const isTestUrl = wf1Path.includes('/webhook-test/');
 
     if (isTestUrl) {
-      // webhook-test URL — WF1 is configured with responseData: noData so body is empty.
-      // The actual clarification arrives via the callback POST /api/quotes/:quoteId/clarification.
-      // We just need to fire and let the callback handle the result.
       axios.post(`${n8nBase}${wf1Path}`, payload, { headers, timeout: 120000 })
         .then(async response => {
           const body = response.data;
-          // If n8n returns actual clarification data (non-empty), save it directly
           if (body && typeof body === 'object') {
             const data = Array.isArray(body) ? body[0] : body;
             const clarification = data?.json?.clarification || data?.clarification;
             if (clarification?.understood) {
-              // ── FIX: reset analysisStatus so polling doesn't return 'failed'
               await Quote.findOneAndUpdate(
                 { quoteId },
                 {
@@ -94,7 +99,6 @@ router.post('/', async (req, res) => {
               return;
             }
           }
-          // Empty body (noData mode) — callback route will save the clarification
           console.log('WF1 triggered (noData mode), waiting for callback for:', quoteId);
         })
         .catch(async err => {
@@ -105,7 +109,6 @@ router.post('/', async (req, res) => {
           );
         });
     } else {
-      // Production — n8n calls back to POST /api/quotes/:quoteId/clarification
       axios.post(`${n8nBase}${wf1Path}`, payload, { headers, timeout: 15000 })
         .catch(async err => {
           console.error('WF1 trigger failed for', quoteId, ':', err.message);

@@ -13,26 +13,32 @@ const LineItemSchema = new mongoose.Schema({
   isDiscount: { type: Boolean, default: false },
 }, { _id: false });
 
-const QuoteSchema = new mongoose.Schema({
-  quoteId:       { type: String, required: true, unique: true, uppercase: true },
+// Conversation message thread — mirrors AgentConversation pattern
+const MessageSchema = new mongoose.Schema({
+  role:      { type: String, enum: ['user', 'assistant'], required: true },
+  content:   { type: String, default: '' },
+  timestamp: { type: Date, default: Date.now },
+}, { _id: false });
 
-  // Client info
-  clientName:    { type: String, required: true },
-  clientEmail:   { type: String, required: true, lowercase: true },
+const QuoteSchema = new mongoose.Schema({
+  quoteId: { type: String, required: true, unique: true, uppercase: true },
+
+  // Client info — optional at init, collected in Your Info step
+  clientName:    { type: String, default: '' },
+  clientEmail:   { type: String, default: '', lowercase: true },
   clientCompany: { type: String, default: '' },
   userId:        { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 
   // Original request text
   request: { type: String, required: true },
 
-  // WF1 output — clarification from Agent 1
+  // Conversation thread
+  messages: [MessageSchema],
+
+  // WF1 output
   clarification: { type: mongoose.Schema.Types.Mixed, default: null },
 
-  // WF23 output — analysis metrics from Agent 2
-  // workflow_summary: plain-English description shown to the client
-  // execution_context: e.g. "Booking requests processed per client inquiry"
-  // workflow_name: friendly name for the generated workflow
-  // node_count: total nodes in the generated workflow JSON
+  // WF23 output — analysis metrics
   analysis: {
     total_agents:      Number,
     llm_nodes:         Number,
@@ -46,7 +52,7 @@ const QuoteSchema = new mongoose.Schema({
     agents:            [AgentSchema],
   },
 
-  // WF23 output — the actual n8n workflow JSON, locked until payment
+  // WF23 output — the actual n8n workflow JSON
   workflow: {
     json:        { type: mongoose.Schema.Types.Mixed, default: null },
     mermaid:     { type: String, default: '' },
@@ -55,8 +61,8 @@ const QuoteSchema = new mongoose.Schema({
   },
   workflowLocked: { type: Boolean, default: true },
 
-  // Pricing configuration (set at StepConfigure)
-  plan:            { type: String, enum: ['whitelabel', 'recurring', 'payg'], required: true },
+  // Pricing configuration
+  plan:            { type: String, enum: ['whitelabel', 'recurring', 'payg'], default: 'recurring' },
   supportContract: { type: String, default: null },
   selectedTierId:  { type: String, default: 't2' },
   hostedLLMs:      { type: Boolean, default: true },
@@ -66,7 +72,7 @@ const QuoteSchema = new mongoose.Schema({
     gemini:  { type: Boolean, default: false },
   },
 
-  // Calculated pricing (stored for admin reference — source of truth is client-side calc)
+  // Calculated pricing (admin reference)
   price:         { type: String },
   buildPrice:    { type: Number },
   setupFee:      { type: Number, default: null },
@@ -75,17 +81,17 @@ const QuoteSchema = new mongoose.Schema({
 
   // Status
   analysisStatus: {
-    type: String,
+    type:    String,
     default: 'processing',
-    enum: ['processing', 'ready', 'failed'],
+    enum:    ['processing', 'ready', 'failed'],
   },
   status: {
-    type: String,
-    enum: ['new', 'clarified', 'analysing', 'draft', 'pending', 'paid', 'delivered', 'cancelled'],
+    type:    String,
+    enum:    ['new', 'clarified', 'analysing', 'draft', 'info_collected', 'pending', 'paid', 'delivered', 'cancelled'],
     default: 'new',
   },
 
-  // Timing — for stuck-quote cleanup job
+  // Timing
   wf1SentAt:      { type: Date, default: null },
   wf1CompletedAt: { type: Date, default: null },
   wf23SentAt:     { type: Date, default: null },

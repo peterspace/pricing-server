@@ -24,6 +24,7 @@ async function getSettings() {
   return s;
 }
 
+// ── Generic send (also exported for portal magic link emails) ────────────────
 async function sendEmail({ to, subject, body, attachments = [] }) {
   const transport = createTransport();
   await transport.sendMail({
@@ -100,4 +101,10 @@ async function sendWelcomeEmail({ name, email, quoteId }) {
   });
 }
 
-module.exports = { sendQuoteDelivery, sendWorkflowUnlock, sendUsageAlert, sendWelcomeEmail };
+module.exports = {
+  sendEmail,          // generic — used by portal magic link
+  sendQuoteDelivery,
+  sendWorkflowUnlock,
+  sendUsageAlert,
+  sendWelcomeEmail,
+};

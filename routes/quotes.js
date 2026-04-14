@@ -1,12 +1,15 @@
 'use strict';
-const express = require('express');
-const router  = express.Router();
-const Quote   = require('../models/Quote');
+const express  = require('express');
+const router   = express.Router();
+const crypto   = require('crypto');
+const Quote    = require('../models/Quote');
+const User     = require('../models/User');
+const { signCustomerToken } = require('../middleware/customerAuth');
+const { sendQuoteDelivery, sendEmail } = require('../services/emailService');
 
 // POST /api/quotes/init
-// Called once when user enters Step 3.
 // Creates the quote record and returns quoteId immediately.
-// Idempotent — if quoteId already exists, returns it unchanged.
+// Email not required here — collected in Your Info step (step 6).
 router.post('/init', async (req, res) => {
   const {
     quoteId: clientQuoteId,
@@ -16,9 +19,7 @@ router.post('/init', async (req, res) => {
     request       = '',
   } = req.body;
 
-  if (!clientEmail || !clientEmail.includes('@')) {
-    return res.status(400).json({ message: 'A valid email is required.' });
-  }
+  console.log({userQuoteData:req.body})
 
   try {
     if (clientQuoteId) {
@@ -48,6 +49,7 @@ router.post('/init', async (req, res) => {
       plan:           'recurring',
     });
 
+    console.log('Quote created:', quoteId);
     res.status(201).json({ quoteId, isExisting: false, hasClarification: false });
   } catch (err) {
     console.error('Quote init error:', err.message);
@@ -60,7 +62,7 @@ router.get('/:quoteId/status', async (req, res) => {
   try {
     const quote = await Quote.findOne({
       quoteId: req.params.quoteId.toUpperCase()
-    }).select('quoteId analysisStatus analysis status expiresAt').lean();
+    }).select('quoteId analysisStatus analysis workflow status expiresAt').lean();
 
     if (!quote) return res.status(404).json({ message: 'Quote not found.' });
 
@@ -70,6 +72,7 @@ router.get('/:quoteId/status', async (req, res) => {
         status:         'ready',
         analysisStatus: 'ready',
         analysis:       quote.analysis,
+        workflowJson:   quote.workflow?.json || null,
         expiresAt:      quote.expiresAt,
       });
     }
@@ -87,23 +90,26 @@ router.get('/:quoteId/resume', async (req, res) => {
   try {
     const quote = await Quote.findOne({
       quoteId: req.params.quoteId.toUpperCase()
-    }).select('quoteId status analysisStatus clarification analysis clientName clientEmail clientCompany plan selectedTierId hostedLLMs ownKeys expiresAt').lean();
+    }).select('quoteId status analysisStatus clarification analysis workflow clientName clientEmail clientCompany plan selectedTierId hostedLLMs ownKeys expiresAt').lean();
 
     if (!quote) return res.status(404).json({ message: 'Quote not found.' });
 
-    let resumeStep = 3;
-    if (quote.status === 'clarified' && quote.clarification?.understood) resumeStep = 3;
-    if (quote.status === 'analysing')    resumeStep = 5;
-    if (quote.analysisStatus === 'ready') resumeStep = 6;
-    if (quote.analysisStatus === 'failed' && quote.status !== 'clarified') resumeStep = 3;
+    // New flow: 1=Describe, 2=Clarify, 3=Analyse, 4=Configure, 5=Quote, 6=YourInfo
+    let resumeStep = 2;
+    if (quote.status === 'clarified' && quote.clarification?.understood) resumeStep = 2;
+    if (quote.status === 'analysing')         resumeStep = 3;
+    if (quote.analysisStatus === 'ready')     resumeStep = 5;
+    if (quote.status === 'info_collected')    resumeStep = 5;
+    if (quote.analysisStatus === 'failed' && quote.status !== 'clarified') resumeStep = 2;
 
     res.json({
       quoteId:        quote.quoteId,
       resumeStep,
       status:         quote.status,
       analysisStatus: quote.analysisStatus,
-      clarification:  quote.clarification || null,
-      analysis:       quote.analysis      || null,
+      clarification:  quote.clarification  || null,
+      analysis:       quote.analysis       || null,
+      workflowJson:   quote.workflow?.json || null,
       clientName:     quote.clientName,
       clientEmail:    quote.clientEmail,
       clientCompany:  quote.clientCompany,
@@ -118,7 +124,7 @@ router.get('/:quoteId/resume', async (req, res) => {
   }
 });
 
-// GET /api/quotes/:quoteId  — full quote
+// GET /api/quotes/:quoteId  — full quote (change order lookup)
 router.get('/:quoteId', async (req, res) => {
   try {
     const quote = await Quote.findOne({
@@ -146,6 +152,117 @@ router.post('/change-order', async (req, res) => {
   }
 });
 
+// POST /api/quotes/:quoteId/info
+// Collects client details after they've seen the quote.
+// Creates or finds a User account, sends quote delivery + portal access emails.
+router.post('/:quoteId/info', async (req, res) => {
+  const { clientName, clientEmail, clientCompany = '' } = req.body;
+  const quoteId = req.params.quoteId.toUpperCase();
+
+  if (!clientName?.trim())         return res.status(400).json({ message: 'Name is required.' });
+  if (!clientEmail?.includes('@')) return res.status(400).json({ message: 'A valid email is required.' });
+
+  try {
+    // 1. Update quote with client info
+    const quote = await Quote.findOneAndUpdate(
+      { quoteId },
+      {
+        clientName:    clientName.trim(),
+        clientEmail:   clientEmail.trim().toLowerCase(),
+        clientCompany: clientCompany.trim(),
+        status:        'info_collected',
+        $push: {
+          messages: {
+            role:    'user',
+            content: `Contact info: ${clientName.trim()} <${clientEmail.trim().toLowerCase()}>`,
+          },
+        },
+      },
+      { new: true }
+    );
+    if (!quote) return res.status(404).json({ message: 'Quote not found.' });
+
+    // 2. Create or find User account
+    const email  = clientEmail.trim().toLowerCase();
+    let user     = await User.findOne({ email });
+    const isNew  = !user;
+
+    if (!user) {
+      user = await User.create({
+        name:     clientName.trim(),
+        email,
+        company:  clientCompany.trim(),
+        verified: true,
+      });
+    } else {
+      // Update name/company if not already set
+      let changed = false;
+      if (!user.name && clientName.trim())    { user.name    = clientName.trim();    changed = true; }
+      if (!user.company && clientCompany.trim()) { user.company = clientCompany.trim(); changed = true; }
+      if (changed) await user.save();
+    }
+
+    // 3. Generate 48h magic link for portal first login
+    const magicToken  = crypto.randomBytes(32).toString('hex');
+    const magicExpiry = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    await User.findByIdAndUpdate(user._id, {
+      magicLinkToken:  magicToken,
+      magicLinkExpiry: magicExpiry,
+    });
+
+    const portalUrl  = process.env.PORTAL_URL || 'http://localhost:5176';
+    const portalLink = `${portalUrl}/auth/verify?token=${magicToken}`;
+
+    // 4. Send quote delivery email
+    const priceDisplay = quote.analysis
+      ? `Complexity: ${quote.analysis.complexity_label} (${quote.analysis.complexity}/10)`
+      : 'See your dashboard for full details';
+
+    sendQuoteDelivery({
+      name:    clientName.trim(),
+      email,
+      quoteId,
+      price:   priceDisplay,
+      company: clientCompany.trim() || 'n8n Pricing',
+    }).catch(err => console.error('Quote delivery email failed:', err.message));
+
+    // 5. Send portal access email
+    sendEmail({
+      to:      email,
+      subject: `Access your tKle Business Dashboard — ${quoteId}`,
+      body: [
+        `Hi ${clientName.trim()},`,
+        '',
+        isNew
+          ? `Thank you for your workflow request (${quoteId}). We've created your tKle Business Dashboard where you can track your order status.`
+          : `Thank you for your new workflow request (${quoteId}). Track it in your tKle Business Dashboard.`,
+        '',
+        'Sign in to your dashboard:',
+        portalLink,
+        '',
+        'This link expires in 48 hours.',
+        `You can also sign in any time at: ${portalUrl}`,
+        '',
+        'What happens next:',
+        '1. Our team will review your requirements',
+        '2. You\'ll receive a full quote PDF by email',
+        '3. Once approved, your workflow will be delivered via the dashboard',
+        '',
+        `Quote reference: ${quoteId}`,
+        '',
+        '— The tKle Team',
+      ].join('\n'),
+    }).catch(err => console.error('Portal access email failed:', err.message));
+
+    console.log(`Info collected for ${quoteId}: ${email} (${isNew ? 'new' : 'existing'} user)`);
+    res.json({ message: 'Info saved. Confirmation emails sent.', quoteId });
+
+  } catch (err) {
+    console.error('Quote info error:', err.message);
+    res.status(500).json({ message: 'Failed to save info.' });
+  }
+});
+
 
 // ── n8n Callbacks ─────────────────────────────────────────────────────────────
 
@@ -158,29 +275,22 @@ router.get('/:quoteId/clarification', async (req, res) => {
 
     if (!quote) return res.status(404).json({ message: 'Quote not found.' });
 
-    // ── FIX: check clarification FIRST — it may have arrived even if analysisStatus
-    // looks stale from a previous failed attempt on the same quote
     if (quote.status === 'clarified' && quote.clarification?.understood) {
       return res.json({ quoteId: quote.quoteId, status: 'ready', clarification: quote.clarification });
     }
-
-    // Only return failed if analysisStatus is failed AND no clarification was saved
     if (quote.analysisStatus === 'failed' && !quote.clarification?.understood) {
       return res.json({ quoteId: quote.quoteId, status: 'failed' });
     }
-
     res.json({ quoteId: quote.quoteId, status: 'thinking' });
   } catch {
     res.status(500).json({ message: 'Server error.' });
   }
 });
 
-// ── n8n Callbacks ─────────────────────────────────────────────────────────────
 // POST /api/quotes/:quoteId/clarification — WF1 production callback
 router.post('/:quoteId/clarification', async (req, res) => {
   const quoteId = req.params.quoteId.toUpperCase();
-  const secret  = process.env.N8N_WEBHOOK_SECRET;
-
+  // const secret = process.env.N8N_WEBHOOK_SECRET;
   // if (secret && req.headers['x-webhook-secret'] !== secret) {
   //   return res.status(401).json({ message: 'Unauthorized' });
   // }
@@ -191,8 +301,6 @@ router.post('/:quoteId/clarification', async (req, res) => {
   }
 
   try {
-    // ── FIX: reset analysisStatus to 'processing' so polling doesn't return 'failed'
-    // when this quote had a previous failed attempt
     await Quote.findOneAndUpdate(
       { quoteId },
       {
@@ -213,18 +321,15 @@ router.post('/:quoteId/clarification', async (req, res) => {
 // POST /api/quotes/:quoteId/result — WF23 callback
 router.post('/:quoteId/result', async (req, res) => {
   const { quoteId } = req.params;
-  const secret = process.env.N8N_WEBHOOK_SECRET;
-
+  // const secret = process.env.N8N_WEBHOOK_SECRET;
   // if (secret && req.headers['x-webhook-secret'] !== secret) {
   //   return res.status(401).json({ message: 'Unauthorized' });
   // }
 
-  // n8n sometimes wraps the body in an array — unwrap if needed
   const bodyRaw = Array.isArray(req.body) ? req.body[0] : req.body;
 
   let { analysis, workflow_json, summary } = bodyRaw;
 
-  // n8n may send objects as JSON strings — parse defensively
   function safeParse(val) {
     if (val === null || val === undefined) return val;
     if (typeof val === 'object') return val;

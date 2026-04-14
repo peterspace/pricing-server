@@ -6,8 +6,6 @@ const Quote    = require('../models/Quote');
 const { analyseLimiter } = require('../middleware/rateLimiter');
 
 // POST /api/analyse
-// quoteId comes from the client (returned by /api/clarify)
-// Updates the existing quote record then fires WF23 in background
 router.post('/', analyseLimiter, async (req, res) => {
   const {
     quoteId,
@@ -29,12 +27,9 @@ router.post('/', analyseLimiter, async (req, res) => {
   if (!prompt || typeof prompt !== 'string' || prompt.trim().length < 20) {
     return res.status(400).json({ message: 'Please provide a detailed automation description.' });
   }
-  if (!clientEmail || !clientEmail.includes('@')) {
-    return res.status(400).json({ message: 'A valid client email is required.' });
-  }
+  // clientEmail is optional — collected later in Your Info step
 
   try {
-    // Update the existing quote (created by /api/clarify) with config options
     const updated = await Quote.findOneAndUpdate(
       { quoteId: quoteId.toUpperCase() },
       {
@@ -46,6 +41,7 @@ router.post('/', analyseLimiter, async (req, res) => {
         status:         'analysing',
         analysisStatus: 'processing',
         wf23SentAt:     new Date(),
+        $push: { messages: { role: 'user', content: `[Analysis triggered] ${prompt.trim().slice(0, 200)}` } },
       },
       { new: true }
     );
@@ -61,7 +57,7 @@ router.post('/', analyseLimiter, async (req, res) => {
       message: 'Analysis started. Poll /api/quotes/:quoteId/status for updates.',
     });
 
-    // Fire WF23 in background after response is sent
+    // Fire WF23 in background
     const n8nBase  = process.env.N8N_BASE_URL;
     const secret   = process.env.N8N_WEBHOOK_SECRET;
     const wf23Path = process.env.N8N_WF23_PATH || '/webhook-test/confirm-clarification';
@@ -90,7 +86,7 @@ router.post('/', analyseLimiter, async (req, res) => {
           'Content-Type': 'application/json',
           ...(secret ? { 'x-webhook-secret': secret } : {}),
         },
-        timeout: 180000,
+        timeout: 360000, // 6 minutes — WF23 can take 3-5 min for complex workflows
       }
     ).catch(err => {
       console.error(`WF23 trigger failed for ${quoteId}:`, err.message);
