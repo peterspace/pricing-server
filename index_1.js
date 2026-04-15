@@ -69,7 +69,6 @@ app.use('/api/agent/billing', require('./routes/agent/billing'));
 app.use('/api/customer/auth',    require('./routes/customer/auth'));
 app.use('/api/customer/orders',  require('./routes/customer/orders'));
 app.use('/api/customer/account', require('./routes/customer/account'));
-app.use('/api/customer/billing', require('./routes/customer/billing'));
 
 // ── Admin routes (all protected by JWT in individual routers) ─────────────────
 app.use('/api/admin/auth', require('./routes/admin/auth'));

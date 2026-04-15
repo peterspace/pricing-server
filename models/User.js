@@ -23,6 +23,10 @@ const UserSchema = new mongoose.Schema({
   // Stripe
   stripeCustomerId: { type: String, default: '' },
 
+  // Invoice cache
+  invoicesCache:    { type: Array, default: [] },
+  invoicesCachedAt: { type: Date,  default: null },
+
   // Stats
   quoteCount: { type: Number, default: 0 },
 }, { timestamps: true });

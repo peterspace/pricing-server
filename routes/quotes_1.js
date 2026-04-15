@@ -19,6 +19,8 @@ router.post('/init', async (req, res) => {
     request       = '',
   } = req.body;
 
+  console.log({userQuoteData:req.body})
+
   try {
     if (clientQuoteId) {
       const existing = await Quote.findOne({
@@ -160,10 +162,8 @@ router.post('/:quoteId/info', async (req, res) => {
   if (!clientName?.trim())         return res.status(400).json({ message: 'Name is required.' });
   if (!clientEmail?.includes('@')) return res.status(400).json({ message: 'A valid email is required.' });
 
-  const { price = null } = req.body;  // optional price estimate from client
-
   try {
-    // 1. Update quote with client info + price estimate
+    // 1. Update quote with client info
     const quote = await Quote.findOneAndUpdate(
       { quoteId },
       {
@@ -171,7 +171,6 @@ router.post('/:quoteId/info', async (req, res) => {
         clientEmail:   clientEmail.trim().toLowerCase(),
         clientCompany: clientCompany.trim(),
         status:        'info_collected',
-        ...(price ? { price: String(price) } : {}),
         $push: {
           messages: {
             role:    'user',
@@ -213,6 +212,8 @@ router.post('/:quoteId/info', async (req, res) => {
 
     const portalUrl  = process.env.PORTAL_URL || 'http://localhost:5176';
     const portalLink = `${portalUrl}/auth/verify?token=${magicToken}`;
+
+    console.log({portalLink})
 
     // 4. Send quote delivery email
     const priceDisplay = quote.analysis

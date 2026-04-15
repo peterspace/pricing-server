@@ -6,14 +6,14 @@ const { customerProtect } = require('../../middleware/customerAuth');
 
 router.use(customerProtect);
 
-// GET /api/customer/orders
+// GET /api/customer/orders — list, newest first
 router.get('/', async (req, res) => {
   try {
     const orders = await Quote.find({
       clientEmail: req.customer.email,
       status:      { $ne: 'cancelled' },
     })
-    .select('quoteId status analysisStatus request analysis createdAt updatedAt plan')
+    .select('quoteId status analysisStatus request analysis createdAt updatedAt plan price hostedLLMs ownKeys selectedTierId workflowLocked')
     .sort({ createdAt: -1 })
     .lean();
 
@@ -24,20 +24,17 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/customer/orders/:quoteId
+// GET /api/customer/orders/:quoteId — full detail (no workflow JSON)
 router.get('/:quoteId', async (req, res) => {
   try {
     const order = await Quote.findOne({
       quoteId:     req.params.quoteId.toUpperCase(),
       clientEmail: req.customer.email,
-    }).lean();
+    })
+    .select('-workflow.json -workflow.mermaid -workflow.docs -messages')  // strip internal fields
+    .lean();
 
     if (!order) return res.status(404).json({ message: 'Order not found.' });
-
-    // Workflow JSON only visible for delivered orders
-    if (order.status !== 'delivered') {
-      delete order.workflow;
-    }
 
     res.json({ order });
   } catch (err) {
